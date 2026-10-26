@@ -31,7 +31,7 @@ const isPrompt = (d) => {
 };
 
 const CACHE = cacheFile('claude.json');
-const VER = 'v3'; // bump when parseFile output changes so stale cache entries are not reused
+const VER = 'v4'; // bump when parseFile output changes so stale cache entries are not reused
 const MAX_DUR = 10 * 60 * 1000; // longer "requests" are waiting on the user/tools, not generation
 const TS = /"timestamp":"([^"]+)"/;
 let MEM = null;
