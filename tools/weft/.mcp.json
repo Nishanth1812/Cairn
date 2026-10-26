@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "weft": {
+      "command": "weft",
+      "args": [
+        "mcp",
+        "serve"
+      ]
+    }
+  }
+}

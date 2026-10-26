@@ -1,0 +1,7 @@
+.claude/
+.mcp.json
+AGENTS.md
+CLAUDE.md
+tests/
+weft_*_plan.md
+*.tsbuildinfo

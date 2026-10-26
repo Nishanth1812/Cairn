@@ -1,0 +1,53 @@
+{
+  "name": "weft",
+  "version": "0.1.0",
+  "description": "Local-first developer efficiency layer for AI coding harnesses",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Nishanth1812/Weft.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Nishanth1812/Weft/issues"
+  },
+  "homepage": "https://github.com/Nishanth1812/Weft#readme",
+  "bin": {
+    "weft": "./dist/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "scripts": {
+    "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc --noEmit && rolldown -c",
+    "watch": "rolldown -c --watch",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run lint && npm run build"
+  },
+  "keywords": [
+    "developer-tools",
+    "ai-coding",
+    "context",
+    "indexing",
+    "local-first",
+    "telemetry"
+  ],
+  "author": "",
+  "license": "GPL-3.0-only",
+  "dependencies": {
+    "better-sqlite3": "^11.8.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.4",
+    "eslint": "^10.13.0",
+    "rolldown": "^1.2.14",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.71.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

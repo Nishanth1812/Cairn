@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"H:/Personal/Projects/Weft/dist/cli/index.js\" hook session-start # weft-hook"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"H:/Personal/Projects/Weft/dist/cli/index.js\" hook stop # weft-hook"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"H:/Personal/Projects/Weft/dist/cli/index.js\" hook pre-compact # weft-hook"
+          }
+        ]
+      }
+    ]
+  }
+}
