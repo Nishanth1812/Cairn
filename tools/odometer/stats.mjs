@@ -30,7 +30,7 @@ async function fetchRows() {
   }
 }
 function decode(d) {
-  const ix = Object.fromEntries(d.cols.map((c, i) => [c, i])), S = ['tool', 'provider', 'model', 'session', 'project', 'turn', 'agent'];
+  const ix = Object.fromEntries(d.cols.map((c, i) => [c, i])), S = ['tool', 'provider', 'model', 'session', 'project', 'turn', 'agent', 'tools'];
   return d.rows.map((r) => {
     const o = Object.fromEntries(d.cols.map((c, i) => [c, r[i]]));
     for (const c of S) o[c] = d.dict[o[c]];
@@ -88,7 +88,7 @@ if (EXPORT) { // --json | --csv [--range=1d|7d|30d|All] [--by=day|tool|model|pro
     }
     out = [...g.values()].map((a) => ({ ...a, costUsd: round(a.costUsd) })).sort((x, y) => (by === 'day' ? (x.day < y.day ? -1 : 1) : y.costUsd - x.costUsd));
   } else {
-    out = rows.map((r) => ({ time: new Date(r.ts).toISOString(), tool: r.tool, provider: r.provider, model: r.model, project: r.project, session: r.session, input: r.input, cacheRead: r.cacheRead, cacheWrite: r.cacheWrite, output: r.output, reasoning: r.reasoning, costUsd: round(r.costUsd), durMs: r.durMs }));
+    out = rows.map((r) => ({ time: new Date(r.ts).toISOString(), tool: r.tool, provider: r.provider, model: r.model, project: r.project, session: r.session, turn: r.turn, tools: r.tools, input: r.input, cacheRead: r.cacheRead, cacheWrite: r.cacheWrite, output: r.output, reasoning: r.reasoning, costUsd: round(r.costUsd), durMs: r.durMs }));
   }
   if (flag('json')) console.log(JSON.stringify(out, null, 2));
   else if (out.length) {
