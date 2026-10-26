@@ -1,0 +1,64 @@
+{
+  "tasks": [
+    {
+      "id": "bugfix-harness-placeholder", "title": "Restore prompt validation", "category": "bugfix", "repoPath": ".",
+      "prompt": "Fix the regression so harness templates require {prompt}.", "testCommand": "node tests/benchmarks/check-source.mjs bugfix-harness-placeholder", "estimatedTokens": 18000,
+      "setup": [{ "path": "src/bench/live.ts", "from": "if (!harnessTemplate.includes('{prompt}'))", "to": "if (!harnessTemplate.includes('{prompts}'))" }],
+      "solution": [{ "path": "src/bench/live.ts", "from": "if (!harnessTemplate.includes('{prompts}'))", "to": "if (!harnessTemplate.includes('{prompt}'))" }]
+    },
+    {
+      "id": "bugfix-baseline-instructions", "title": "Keep baseline free of Weft instructions", "category": "bugfix", "repoPath": ".",
+      "prompt": "Fix the regression that installs managed instructions in condition A.", "testCommand": "node tests/benchmarks/check-source.mjs bugfix-baseline-instructions", "estimatedTokens": 18000,
+      "setup": [{ "path": "src/bench/live.ts", "from": "if (condition !== 'A') await syncClaudeInstructions", "to": "if (condition === 'A') await syncClaudeInstructions" }],
+      "solution": [{ "path": "src/bench/live.ts", "from": "if (condition === 'A') await syncClaudeInstructions", "to": "if (condition !== 'A') await syncClaudeInstructions" }]
+    },
+    {
+      "id": "bugfix-repo-isolation", "title": "Keep task work in isolated copies", "category": "bugfix", "repoPath": ".",
+      "prompt": "Restore the copy step so benchmark task work cannot affect the source repository.", "testCommand": "node tests/benchmarks/check-source.mjs bugfix-repo-isolation", "estimatedTokens": 18000,
+      "setup": [{ "path": "src/bench/live.ts", "from": "await cp(resolve(task.repoPath), repo,", "to": "await cp(resolve(task.repoPath), resolve(task.repoPath)," }],
+      "solution": [{ "path": "src/bench/live.ts", "from": "await cp(resolve(task.repoPath), resolve(task.repoPath),", "to": "await cp(resolve(task.repoPath), repo," }]
+    },
+    {
+      "id": "bugfix-test-gating", "title": "Require acceptance checks to pass", "category": "bugfix", "repoPath": ".",
+      "prompt": "Restore the rule that both the harness and the task acceptance command must pass.", "testCommand": "node tests/benchmarks/check-source.mjs bugfix-test-gating", "estimatedTokens": 18000,
+      "setup": [{ "path": "src/bench/live.ts", "from": "const success = harness.code === 0 && test.code === 0;", "to": "const success = harness.code === 0 || test.code === 0;" }],
+      "solution": [{ "path": "src/bench/live.ts", "from": "const success = harness.code === 0 || test.code === 0;", "to": "const success = harness.code === 0 && test.code === 0;" }]
+    },
+    {
+      "id": "feature-task-token-budget", "title": "Use task token ceilings", "category": "feature", "repoPath": ".",
+      "prompt": "Restore support for task-specific estimatedTokens in dry-run estimates.", "testCommand": "node tests/benchmarks/check-source.mjs feature-task-token-budget", "estimatedTokens": 16000,
+      "setup": [{ "path": "src/cli/commands/index.ts", "from": "task.estimatedTokens ?? 10_000", "to": "task.estimatedTokens ?? 0" }],
+      "solution": [{ "path": "src/cli/commands/index.ts", "from": "task.estimatedTokens ?? 0", "to": "task.estimatedTokens ?? 10_000" }]
+    },
+    {
+      "id": "feature-task-filter", "title": "Filter runs by task id", "category": "feature", "repoPath": ".",
+      "prompt": "Restore --tasks id1,id2 filtering so selected tasks run and unknown ids are rejected.", "testCommand": "node tests/benchmarks/check-source.mjs feature-task-filter", "estimatedTokens": 16000,
+      "setup": [{ "path": "src/cli/commands/index.ts", "from": ".filter((task) => selected.includes(task.id))", "to": ".filter((task) => !selected.includes(task.id))" }],
+      "solution": [{ "path": "src/cli/commands/index.ts", "from": ".filter((task) => !selected.includes(task.id))", "to": ".filter((task) => selected.includes(task.id))" }]
+    },
+    {
+      "id": "feature-repeat-summary", "title": "Repeat trials and summarize spread", "category": "feature", "repoPath": ".",
+      "prompt": "Restore --repeat n execution and report median and spread of successful task cost.", "testCommand": "node tests/benchmarks/check-source.mjs feature-repeat-summary", "estimatedTokens": 16000,
+      "setup": [{ "path": "src/cli/commands/index.ts", "from": "Array.from({ length: repeat }", "to": "Array.from({ length: 1 }" }],
+      "solution": [{ "path": "src/cli/commands/index.ts", "from": "Array.from({ length: 1 }", "to": "Array.from({ length: repeat }" }]
+    },
+    {
+      "id": "refactor-suite-loader", "title": "Rename the setup cleanup helper clearly", "category": "refactor", "repoPath": ".",
+      "prompt": "Rename removeWeftSetup to clearWeftSetup and update its caller without changing behavior.", "testCommand": "node tests/benchmarks/check-source.mjs refactor-suite-loader", "estimatedTokens": 14000,
+      "setup": [],
+      "solution": [{ "path": "src/bench/live.ts", "from": "removeWeftSetup", "to": "clearWeftSetup" }, { "path": "src/bench/live.ts", "from": "await removeWeftSetup(repo);", "to": "await clearWeftSetup(repo);" }]
+    },
+    {
+      "id": "refactor-usage-parser", "title": "Rename harness usage parser", "category": "refactor", "repoPath": ".",
+      "prompt": "Rename the usage parser and call site to readUsage while preserving provider usage handling.", "testCommand": "node tests/benchmarks/check-source.mjs refactor-usage-parser", "estimatedTokens": 14000,
+      "setup": [],
+      "solution": [{ "path": "src/bench/live.ts", "from": "function usage(", "to": "function readUsage(" }, { "path": "src/bench/live.ts", "from": "const parsed = usage(harness.stdout);", "to": "const parsed = readUsage(harness.stdout);" }]
+    },
+    {
+      "id": "comprehension-mcp-config", "title": "Explain condition C state", "category": "comprehension", "repoPath": ".",
+      "prompt": "Answer what local state directory condition C uses on Windows and why it is isolated. Record the answer in tests/benchmarks/answers/condition-c.md.", "testCommand": "node tests/benchmarks/check-source.mjs comprehension-mcp-config", "estimatedTokens": 4000,
+      "setup": [{ "path": "tests/benchmarks/answers/condition-c.md", "from": "weft-local/Weft/state", "to": "weft-local/wrong/state" }],
+      "solution": [{ "path": "tests/benchmarks/answers/condition-c.md", "from": "weft-local/wrong/state", "to": "weft-local/Weft/state" }]
+    }
+  ]
+}

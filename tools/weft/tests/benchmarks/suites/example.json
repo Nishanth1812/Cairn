@@ -1,0 +1,7 @@
+{
+  "tasks": [
+    { "id": "bugfix-example", "title": "Fix a reproducible bug", "category": "bugfix", "repoPath": ".", "prompt": "Fix the reported bug in this repository and run the focused test.", "testCommand": "npm test" },
+    { "id": "refactor-example", "title": "Refactor a small module", "category": "refactor", "repoPath": ".", "prompt": "Refactor the selected module without changing behavior.", "testCommand": "npm test" },
+    { "id": "feature-example", "title": "Add a small feature", "category": "feature", "repoPath": ".", "prompt": "Implement the requested feature with suitable coverage.", "testCommand": "npm test" }
+  ]
+}
