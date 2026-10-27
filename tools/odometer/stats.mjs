@@ -55,7 +55,12 @@ async function show() {
     const t = mine.filter((r) => r.session === end.session && r.turn === end.turn), sum = (k) => t.reduce((a, r) => a + (r[k] || 0), 0);
     const ctx = sum('ctx'), cost = sum('costUsd'), day = today.reduce((a, r) => a + (r.costUsd || 0), 0), STEP = 5;
     if (hook && cost < (+process.env.ODOMETER_MIN_USD || 0.25) && Math.floor(day / STEP) === Math.floor((day - cost) / STEP)) return; // quiet unless the turn was pricey or today crossed another $5
-    const line = `${usd(cost)} · ${n(sum('tot'))} tok (${n(sum('output'))} out) · cache ${ctx ? Math.round(sum('cacheRead') / ctx * 100) : 0}% · today ${usd(day)}`;
+    const turns = new Map(); for (const r of today) turns.set(r.session + r.turn, (turns.get(r.session + r.turn) || 0) + (r.costUsd || 0));
+    const typ = turns.size >= 5 ? med([...turns.values()]) : 0, x = typ > 0.005 ? cost / typ : 0, hit = ctx ? Math.round(sum('cacheRead') / ctx * 100) : 0;
+    const spd = Math.round(med(t.filter((r) => r.durMs > 0 && r.output >= 30).map((r) => r.output / (r.durMs / 1e3))));
+    const head = `${x >= 2 ? '▲ ' : ''}${usd(cost)} · ${n(sum('tot'))} tok · cache ${hit}% · today ${usd(day)}${x >= 1.5 ? ` · ${x.toFixed(1)}× typical` : ''}`;
+    const line = `${head}
+${t.length} req · ${n(ctx - sum('cacheRead'))} new · ${n(sum('output'))} out · ${spd ? spd + ' tok/s · ' : ''}cache ${'▰'.repeat(Math.round(hit / 10))}${'▱'.repeat(10 - Math.round(hit / 10))} · ${end.model}`;
     console.log(hook ? JSON.stringify({ systemMessage: line }) : line);
     return;
   }
