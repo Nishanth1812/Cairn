@@ -16,7 +16,7 @@ With `--by=day|tool|model|project`: one aggregate row per key (`requests, input,
 
 ## `GET /api/data?range=...`
 
-Gzipped JSON `{ cols, dict, rows, status, limits, now }` used by the dashboard. Rows are arrays in `cols` order; string columns (`tool, provider, model, session, project, turn, agent, tools`) are indexes into `dict`.
+Gzipped JSON `{ cols, dict, rows, status, limits, now }` used by the dashboard. Rows are arrays in `cols` order; string columns (`tool, provider, model, session, project, turn, agent`) are indexes into `dict`; `tools` is a plain comma-joined string.
 
 ## `GET /api/weft`
 

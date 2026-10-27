@@ -30,7 +30,7 @@ async function fetchRows() {
   }
 }
 function decode(d) {
-  const ix = Object.fromEntries(d.cols.map((c, i) => [c, i])), S = ['tool', 'provider', 'model', 'session', 'project', 'turn', 'agent', 'tools'];
+  const ix = Object.fromEntries(d.cols.map((c, i) => [c, i])), S = ['tool', 'provider', 'model', 'session', 'project', 'turn', 'agent'];
   return d.rows.map((r) => {
     const o = Object.fromEntries(d.cols.map((c, i) => [c, r[i]]));
     for (const c of S) o[c] = d.dict[o[c]];
