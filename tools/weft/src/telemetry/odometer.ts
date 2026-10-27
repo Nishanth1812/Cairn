@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -6,6 +6,8 @@ const exec = promisify(execFile);
 
 const ODOMETER_DIR = join(import.meta.dirname, '..', '..', '..', 'odometer');
 const ODOMETER_STATS = join(ODOMETER_DIR, 'stats.mjs');
+const ODOMETER_SERVER = join(ODOMETER_DIR, 'server.mjs');
+export const ODOMETER_URL = 'http://127.0.0.1:4747';
 
 function resolveBinary(): string[] {
   const bin = process.env.TOKEN_ODOMETER_BIN ?? '';
@@ -47,6 +49,30 @@ export function rangeForSince(since?: string): string {
   if (days <= 14) return '7d';
   if (days <= 45) return '30d';
   return 'All';
+}
+
+function resolveServerBinary(): string[] {
+  const bin = process.env.TOKEN_ODOMETER_BIN ?? '';
+  if (bin) return [bin];
+  return ['node', '--no-warnings', ODOMETER_SERVER];
+}
+
+export async function odometerReachable(): Promise<boolean> {
+  try {
+    const res = await fetch(`${ODOMETER_URL}/`, { signal: AbortSignal.timeout(1000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export function startOdometerServer(): void {
+  void odometerReachable().then((reachable) => {
+    if (reachable) return;
+    const bin = resolveServerBinary();
+    const child = spawn(bin[0]!, bin.slice(1), { detached: true, stdio: 'ignore', windowsHide: true });
+    child.unref();
+  });
 }
 
 export async function readOdometer(range: string): Promise<OdometerRow[]> {

@@ -26,6 +26,7 @@ import { syncCodexInstructions, CODEX_GUIDELINES } from '../../integrations/code
 import { checkInstructions } from '../../integrations/instructions.js';
 import { getCacheDiagnostics, getCostSummary, listSessions } from '../../telemetry/analytics.js';
 import { getStats } from '../../telemetry/stats.js';
+import { odometerReachable, startOdometerServer, ODOMETER_URL } from '../../telemetry/odometer.js';
 import { migrateDevPulse } from '../../migration/devpulse/migrator.js';
 import { openDatabase, repairCorruptDatabase } from '../../storage/db.js';
 import { migrate } from '../../storage/migrator.js';
@@ -166,8 +167,9 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       const home = process.env.HOME ?? process.env.USERPROFILE ?? process.cwd();
       const integrations = await checkIntegrations(home);
       const hooksLog = await readFile(join(paths.state, 'hooks.log'), 'utf8').then(value => value.trim().slice(-500)).catch(() => '');
-      const data = { node: process.version, database: integrity, repairedFrom: preflight.backup ?? null, hookLog: hooksLog, repositories: allRepos(db).length, weftOnPath: commandOnPath('weft'), integrations };
-      const lines = integrations.map((item) => `${item.id}: ${item.status}${item.detail ? ` (${item.detail})` : ''}${item.fix ? `; fix: ${item.fix}` : ''}`);
+      const odometer = await odometerReachable();
+      const data = { node: process.version, database: integrity, repairedFrom: preflight.backup ?? null, hookLog: hooksLog, repositories: allRepos(db).length, weftOnPath: commandOnPath('weft'), integrations, odometer: odometer ? 'reachable' : 'unreachable' };
+      const lines = [...integrations.map((item) => `${item.id}: ${item.status}${item.detail ? ` (${item.detail})` : ''}${item.fix ? `; fix: ${item.fix}` : ''}`), `odometer: ${odometer ? 'reachable' : 'unreachable'}`];
       if (compactOutput) return { code: warnings.length ? 6 : 0, data: lines.join('\n'), warnings };
       return { code: warnings.length ? 6 : 0, data, warnings };
     } finally { db.close(); }
@@ -330,6 +332,13 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       if (by && !['harness', 'model', 'repo'].includes(by)) fail('--by must be harness, model, or repo', 2);
       return { code: 0, data: group === 'cache' ? await getCacheDiagnostics(db, { since }) : await getCostSummary(db, { since, by }) };
     } finally { db.close(); }
+  }
+  if (group === 'dashboard') {
+    startOdometerServer();
+    const reachable = await odometerReachable();
+    const data = { url: ODOMETER_URL, reachable };
+    if (compactOutput) return { code: reachable ? 0 : 1, data: `Token Odometer: ${ODOMETER_URL} (${reachable ? 'reachable' : 'unreachable'})`, warnings: reachable ? [] : ['Odometer server did not become reachable'] };
+    return { code: reachable ? 0 : 1, data, warnings: reachable ? [] : ['Odometer server did not become reachable'] };
   }
   if (group === 'bench' && sub === 'retrieval') {
     const db = database();
