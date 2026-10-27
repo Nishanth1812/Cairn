@@ -37,7 +37,7 @@ async function fetchOdometer(range: string): Promise<OdometerRow[]> {
   const bin = resolveBinary();
   const { stdout } = await exec(bin[0]!, [...bin.slice(1), '--json', `--range=${range}`, '--no-start'], {
     timeout: 20_000,
-    maxBuffer: 50 * 1024 * 1024,
+    maxBuffer: 512 * 1024 * 1024,
   });
   return JSON.parse(stdout) as OdometerRow[];
 }
