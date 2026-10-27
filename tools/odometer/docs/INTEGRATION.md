@@ -21,3 +21,12 @@ Gzipped JSON `{ cols, dict, rows, status, limits, now }` used by the dashboard. 
 ## `GET /api/weft`
 
 Runs `weft stats --json` (`WEFT_BIN` or `weft` on PATH), cached 60 s. Returns `{ available: false }` when Weft is missing.
+
+## Per-response cost line (Claude Code)
+
+`token-odometer-stats --last` prints the latest turn (tokens, cost, cache hit, request count) plus today's total; add `--session=<id>` to pin a session.
+`--stop-hook` is the same line as a Claude Code `Stop` hook (`{"systemMessage": ...}`, session id read from stdin). It stays quiet unless the turn cost at least `$ODOMETER_MIN_USD` (default 0.25) or today's total crossed another $5.
+
+```json
+{ "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "node --no-warnings <repo>/tools/odometer/stats.mjs --stop-hook --no-start" }] }] } }
+```

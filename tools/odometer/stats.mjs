@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// token-odometer-stats [--watch | --line | --open | --compact | --json | --csv]   quick terminal check: today per tool + last requests (--line: one line for a status bar).
+// token-odometer-stats [--watch | --line | --last | --stop-hook | --open | --compact | --json | --csv]   quick terminal check: today per tool + last requests (--line: one line for a status bar; --last: the latest turn; --stop-hook: Claude Code Stop hook, prints the latest turn when it cost enough).
 process.removeAllListeners('warning'); // node:sqlite's experimental notice
 import { gunzipSync } from 'node:zlib';
 import { spawn } from 'node:child_process';
@@ -48,6 +48,17 @@ async function show() {
     if (r.durMs > 0 && r.output >= 30) a.tps.push(r.output / (r.durMs / 1e3));
   }
   const med = (a) => (a.length ? a.sort((x, y) => x - y)[a.length >> 1] : 0);
+  if (flag('last') || flag('stop-hook')) { // latest turn (a prompt and all its tool-loop requests, subagents included) + today
+    const hook = flag('stop-hook'), sid = hook ? JSON.parse((!process.stdin.isTTY && (await new Response(process.stdin).text())) || '{}').session_id : arg('session');
+    const mine = sid ? rows.filter((r) => r.session === sid) : rows, end = mine.at(-1);
+    if (!end) return;
+    const t = mine.filter((r) => r.session === end.session && r.turn === end.turn), sum = (k) => t.reduce((a, r) => a + (r[k] || 0), 0);
+    const ctx = sum('ctx'), cost = sum('costUsd'), day = today.reduce((a, r) => a + (r.costUsd || 0), 0), STEP = 5;
+    if (hook && cost < (+process.env.ODOMETER_MIN_USD || 0.25) && Math.floor(day / STEP) === Math.floor((day - cost) / STEP)) return; // quiet unless the turn was pricey or today crossed another $5
+    const line = `Odometer · turn ${n(sum('tot'))} tok (${n(ctx - sum('cacheRead') + sum('output'))} new, ${n(sum('output'))} out) · ~${usd(cost)} · cache ${ctx ? Math.round(sum('cacheRead') / ctx * 100) : 0}% · ${t.length} req · today ~${usd(day)}`;
+    console.log(hook ? JSON.stringify({ systemMessage: line }) : line);
+    return;
+  }
   if (process.argv.includes('--line')) { // e.g. a Claude Code status line or shell prompt
     let tot = 0, fresh = 0, cr = 0, ctx = 0, cost = 0;
     for (const a of by.values()) { tot += a.tot; fresh += a.fresh; cr += a.cr; ctx += a.ctx; cost += a.cost; }
