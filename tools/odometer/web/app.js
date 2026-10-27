@@ -196,9 +196,25 @@ function turns(rs) {
     all.map((t) => `<tr><td class="l n">${fmtT(t.start)}</td><td class="l">${dot(t.tool)}${tname(t.tool)}</td><td class="l hm">${esc(t.project || '–')}</td><td class="n">${t.a.n}</td><td class="n">${fmtN(t.a.tokens)}</td><td class="n hm">${fmtP(t.a.hit)}</td><td class="n">${fmtMs(t.wall)}</td><td class="n">${t.a.usd}</td></tr>`).join('') + '</tbody>' : '');
 }
 
+// Weft panel: its own savings and adoption (/api/weft, hidden when Weft is absent), plus cost per turn with vs without Weft calls from the rows we already have.
+let weftData = null, weftAt = 0;
+async function weftPanel(rs) {
+  if (Date.now() - weftAt > 6e4) { weftAt = Date.now(); weftData = await fetch('/api/weft').then((r) => r.json()).catch(() => null); }
+  const w = weftData, el = $('#weft');
+  el.hidden = !w?.available;
+  if (el.hidden) return;
+  const turnCost = new Map();
+  for (const r of rs) { const k = r.tool + '' + r.turn, t = turnCost.get(k) || turnCost.set(k, { usd: 0, weft: false }).get(k); t.usd += r.costUsd || 0; t.weft ||= r.tools.some((n) => n.includes('weft_')); }
+  const avg = (on) => { const t = [...turnCost.values()].filter((x) => x.weft === on); return t.length ? { n: t.length, usd: t.reduce((s, x) => s + x.usd, 0) / t.length } : null; };
+  const [yes, no] = [avg(true), avg(false)], a = w.adoption, saved = w.toolTokens.baseline - w.toolTokens.returned;
+  put($('#weft-body'),
+    `Adoption ${a.percent}% of sessions (${fmtN(a.weftCalls)} Weft calls vs ${fmtN(a.explorationCalls)} Grep/Glob/Read). Tokens returned ${fmtN(w.toolTokens.returned)} vs ${fmtN(w.toolTokens.baseline)} reading whole files: ${fmtN(saved)} saved.` +
+    (yes && no ? ` Average API cost per turn: ${fmtUsd(yes.usd)} with Weft calls (${fmtN(yes.n)} turns) vs ${fmtUsd(no.usd)} without (${fmtN(no.n)}). Correlation, not proof: turns that call Weft tend to be code-heavy.` : ''));
+}
+
 function renderHistory() {
   const rs = D.rows;
-  stats(rs); timeline(rs); models(rs); turns(rs);
+  stats(rs); timeline(rs); models(rs); turns(rs); weftPanel(rs);
   const st = Object.entries(D.status).map(([k, v]) => v.ok ? `${tname(k)}: ${fmtN(v.n)} requests${v.first ? `, ${fmtDay(v.first)} → ${fmtDay(v.last)}` : ''}` : `${tname(k)}: ${esc(v.error)}`).join(' · ');
   put($('#sources'), st ? `Scanned: ${st}. Antigravity token fields are inferred from its protobuf logs.` : '');
 }

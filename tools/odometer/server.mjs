@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
 import { setPriority, constants } from 'node:os';
+import { execFile } from 'node:child_process';
 import { createStore } from './store.mjs';
 
 try { setPriority(constants.priority.PRIORITY_BELOW_NORMAL); } catch {} // never compete with the tools it is measuring
@@ -28,6 +29,16 @@ const types = {
 // browsers ask for /favicon.ico on their own; we ship the same gauge as an .ico
 const ALIAS = { '/favicon.ico': '/assets/favicon.ico' };
 
+// Weft's own numbers (savings, adoption), fetched on demand and cached 60 s. Never throws: no Weft just means no panel.
+let weft = { at: 0, body: '{"available":false}' };
+const weftStats = () => Date.now() - weft.at < 6e4 ? weft.body : new Promise((done) => {
+  execFile(process.env.WEFT_BIN || 'weft', ['stats', '--json'], { timeout: 3000, shell: process.platform === 'win32' }, (err, out) => {
+    let body = '{"available":false}';
+    try { if (!err) body = JSON.stringify({ available: true, ...JSON.parse(out).data }); } catch {}
+    weft = { at: Date.now(), body }; done(body);
+  });
+});
+
 createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   try {
@@ -36,6 +47,10 @@ createServer(async (req, res) => {
       await store.touch({ force: q.has('refresh'), live: q.has('live') });
       res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip', 'cache-control': 'no-store' });
       return res.end(store.payload(q.get('range') || '7d'));
+    }
+    if (url.pathname === '/api/weft') {
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      return res.end(await weftStats());
     }
     const p = ALIAS[url.pathname] || (url.pathname === '/' ? '/index.html' : url.pathname);
     if (p.includes('..')) throw new Error('bad path');
