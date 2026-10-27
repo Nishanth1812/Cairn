@@ -55,7 +55,7 @@ async function show() {
     const t = mine.filter((r) => r.session === end.session && r.turn === end.turn), sum = (k) => t.reduce((a, r) => a + (r[k] || 0), 0);
     const ctx = sum('ctx'), cost = sum('costUsd'), day = today.reduce((a, r) => a + (r.costUsd || 0), 0), STEP = 5;
     if (hook && cost < (+process.env.ODOMETER_MIN_USD || 0.25) && Math.floor(day / STEP) === Math.floor((day - cost) / STEP)) return; // quiet unless the turn was pricey or today crossed another $5
-    const line = `Odometer · turn ${n(sum('tot'))} tok (${n(ctx - sum('cacheRead') + sum('output'))} new, ${n(sum('output'))} out) · ~${usd(cost)} · cache ${ctx ? Math.round(sum('cacheRead') / ctx * 100) : 0}% · ${t.length} req · today ~${usd(day)}`;
+    const line = `${usd(cost)} · ${n(sum('tot'))} tok (${n(sum('output'))} out) · cache ${ctx ? Math.round(sum('cacheRead') / ctx * 100) : 0}% · today ${usd(day)}`;
     console.log(hook ? JSON.stringify({ systemMessage: line }) : line);
     return;
   }
