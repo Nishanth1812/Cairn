@@ -161,7 +161,7 @@ export async function logHookFailure(stateDir: string, error: unknown): Promise<
 }
 
 type Settings = { hooks?: Partial<Record<Event, Array<{ matcher?: string; hooks?: Array<Record<string, unknown>> }>>>; [key: string]: unknown };
-function hookEntry(event: Event, bin: string) { return { matcher: event === 'PreToolUse' ? 'Read' : '', hooks: [{ type: 'command', command: `${bin} hook ${event === 'SessionStart' ? 'session-start' : event === 'UserPromptSubmit' ? 'user-prompt-submit' : event === 'PreToolUse' ? 'pre-tool-use' : event === 'Stop' ? 'stop' : 'pre-compact'} # ${MARKER}` }] }; }
+function hookEntry(event: Event, bin: string) { return { matcher: event === 'PreToolUse' ? 'Read|Grep|Glob' : '', hooks: [{ type: 'command', command: `${bin} hook ${event === 'SessionStart' ? 'session-start' : event === 'UserPromptSubmit' ? 'user-prompt-submit' : event === 'PreToolUse' ? 'pre-tool-use' : event === 'Stop' ? 'stop' : 'pre-compact'} # ${MARKER}` }] }; }
 function isWeftHook(hook: Record<string, unknown>) { return typeof hook.command === 'string' && hook.command.includes(`# ${MARKER}`); }
 export async function installClaudeHooks(options: { projectRoot?: string; home?: string; global?: boolean; dryRun?: boolean; bin?: string } = {}) {
   const path = options.global ? join(options.home ?? homedir(), '.claude', 'settings.json') : join(options.projectRoot ?? process.cwd(), '.claude', 'settings.json');

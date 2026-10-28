@@ -2,15 +2,15 @@ import { hookStateDir, logHookFailure, prefetchGitState, runCheckpointHook, runS
 import { runHookSafely } from '../integrations/claude-code/index.js';
 import { ensureRepoOnboarded } from '../onboarding/auto.js';
 
-type HookInput = { cwd?: string; prompt?: string; filePath?: string; ranged?: boolean };
+type HookInput = { cwd?: string; prompt?: string; filePath?: string; ranged?: boolean; tool?: string };
 async function readHookInput(timeoutMs = 150): Promise<HookInput> {
   if (process.stdin.isTTY) return {};
   return new Promise((done) => {
     let raw = '';
     const finish = () => { try {
-      const parsed = JSON.parse(raw) as { cwd?: unknown; prompt?: unknown; tool_input?: { file_path?: unknown; offset?: unknown; limit?: unknown } };
+      const parsed = JSON.parse(raw) as { cwd?: unknown; prompt?: unknown; tool_name?: unknown; tool_input?: { file_path?: unknown; offset?: unknown; limit?: unknown } };
       done({ cwd: typeof parsed.cwd === 'string' ? parsed.cwd : undefined, prompt: typeof parsed.prompt === 'string' ? parsed.prompt : undefined,
-        filePath: typeof parsed.tool_input?.file_path === 'string' ? parsed.tool_input.file_path : undefined, ranged: parsed.tool_input?.offset != null || parsed.tool_input?.limit != null });
+        filePath: typeof parsed.tool_input?.file_path === 'string' ? parsed.tool_input.file_path : undefined, ranged: parsed.tool_input?.offset != null || parsed.tool_input?.limit != null, tool: typeof parsed.tool_name === 'string' ? parsed.tool_name : undefined });
     } catch { done({}); } };
     const timer = setTimeout(() => { process.stdin.pause(); finish(); }, timeoutMs);
     process.stdin.setEncoding('utf8').on('data', (chunk: string) => { raw += chunk; }).once('end', () => { clearTimeout(timer); finish(); });
@@ -25,7 +25,7 @@ export async function runHookCommand(event: string | undefined): Promise<{ code:
     const input: HookInput = event === 'user-prompt-submit' || event === 'pre-tool-use' ? await readHookInput() : {};
     if (event !== 'user-prompt-submit' && event !== 'pre-tool-use') prefetchGitState(process.cwd());
     const data = await runHookSafely(async () => {
-      if (event === 'pre-tool-use') return (await import('../hooks/prompt.js')).runReadNudge({ stateDir: hookStateDir(), cwd: input.cwd, filePath: input.filePath, ranged: input.ranged });
+      if (event === 'pre-tool-use') return (await import('../hooks/prompt.js')).runReadNudge({ stateDir: hookStateDir(), cwd: input.cwd, filePath: input.filePath, ranged: input.ranged, tool: input.tool });
       if (event === 'user-prompt-submit') return (await import('../hooks/prompt.js')).runPromptHook({ stateDir: hookStateDir(), cwd: input.cwd, prompt: input.prompt ?? '' });
       if (event === 'session-start') { const onboarded = await ensureRepoOnboarded(process.cwd());
         if (onboarded.reason === 'not-git') return (await import('../onboarding/workspace.js')).workspaceHint(process.cwd(), hookStateDir());

@@ -66,11 +66,12 @@ export async function runPromptHook(options: { cwd?: string; stateDir: string; p
 
 const LARGE_READ_BYTES = 32 * 1024;
 
-/** PreToolUse(Read): a whole-file read of a big file in an indexed repo costs context on every later turn, so suggest a ranged read instead. Never blocks. */
-export async function runReadNudge(options: { cwd?: string; stateDir: string; filePath?: string; ranged?: boolean }): Promise<string> {
-  if (!options.filePath || options.ranged || /(?:lock\.json|\.lock|\.min\.\w+|\.map)$/i.test(options.filePath)) return '';
-  const size = await stat(options.filePath).then((info) => (info.isFile() ? info.size : 0), () => 0);
-  if (size < LARGE_READ_BYTES) return '';
+/** PreToolUse(Read|Grep|Glob): a whole-file read of a big file, or a grep/glob sweep, in an indexed repo costs context on every later turn, so suggest Weft or a ranged read instead. Never blocks. */
+export async function runReadNudge(options: { cwd?: string; stateDir: string; filePath?: string; ranged?: boolean; tool?: string }): Promise<string> {
+  const sweep = options.tool === 'Grep' || options.tool === 'Glob';
+  if (!sweep && (!options.filePath || options.ranged || /(?:lock\.json|\.lock|\.min\.\w+|\.map)$/i.test(options.filePath))) return '';
+  const size = sweep || !options.filePath ? 0 : await stat(options.filePath).then((info) => (info.isFile() ? info.size : 0), () => 0);
+  if (!sweep && size < LARGE_READ_BYTES) return '';
   const root = await hookGitRoot(resolve(options.cwd ?? process.cwd()));
   if (!root) return '';
   const db = openDatabase(options.stateDir);
@@ -78,6 +79,6 @@ export async function runReadNudge(options: { cwd?: string; stateDir: string; fi
     if (!repoFor(db, root)) return '';
   } finally { db.close(); }
   const tokens = Math.ceil(size / 4 * 1.1);
-  const additionalContext = `This file is about ${Math.round(tokens / 1000)}K tokens and every later turn re-reads it from context. Prefer mcp__weft__weft_search / weft_context to find the part you need, then Read with offset and limit (or weft_read by line range).`;
+  const additionalContext = sweep ? 'Weft has this repo indexed: try mcp__weft__weft_search / weft_context first (ranked, token-budgeted); use Grep or Glob only for an exact string Weft missed.' : `This file is about ${Math.round(tokens / 1000)}K tokens and every later turn re-reads it from context. Prefer mcp__weft__weft_search / weft_context to find the part you need, then Read with offset and limit (or weft_read by line range).`;
   return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext } });
 }

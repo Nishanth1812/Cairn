@@ -108,5 +108,7 @@ async function indexRepositoryLocked(
     db.prepare('DELETE FROM index_generations WHERE id = ?').run(generationId);
     throw error;
   }
+  // Each index copies every file row, so keeping superseded generations multiplies the database size (the index is rebuildable; telemetry is untouched).
+  try { db.prepare('DELETE FROM index_generations WHERE repo_id = ? AND id != ?').run(repoId, generationId); } catch { /* A busy reader must not fail the index. */ }
   return { generationId, files: candidates.length, symbols: symbolCount, chunks: chunkCount, reusedFiles: candidates.filter(({ unchanged }) => unchanged).length, warnings };
 }
