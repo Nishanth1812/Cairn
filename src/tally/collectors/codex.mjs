@@ -6,6 +6,7 @@ import { createZstdDecompress } from 'node:zlib';
 import { homedir } from 'node:os';
 import { join, basename, dirname } from 'node:path';
 import { cacheFile } from './_cache.mjs';
+import { shellTag } from './_shell.mjs';
 
 const root = join(homedir(), '.codex', 'sessions');
 const archived = join(homedir(), '.codex', 'archived_sessions');
@@ -28,7 +29,7 @@ const lines = (file) => {
 };
 
 const CACHE = cacheFile('codex.json');
-const CACHE_VERSION = 3;
+const CACHE_VERSION = 4;
 const MAX_DUR_MS = 10 * 60 * 1000;
 // "timestamp", optional ordinal, top-level type, payload.type (absent for session_meta) -- lets us skip JSON.parse on the bulky lines.
 const HEAD = /^\{"timestamp":"([^"]+)"(?:,"ordinal":\d+)?,"type":"([a-z_]+)","payload":\{(?:"type":"([A-Za-z_]+)")?/;
@@ -75,7 +76,7 @@ async function parseFile(file) {
         } else if (sub.endsWith('_call')) {
           let d; try { d = JSON.parse(line); } catch { continue; }
           const n = d.payload.name;
-          if (n) { A.tur.tools.add(n); A.tc.tools.add(n); }
+          for (const x of [n, shellTag(d.payload.arguments)]) if (x) { A.tur.tools.add(x); A.tc.tools.add(x); }
         }
         if (isModelOut && armed) { callStart = trig; armed = false; }
         continue;

@@ -5,6 +5,7 @@ import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
 import { join, basename, dirname } from 'node:path';
 import { cacheFile } from './_cache.mjs';
+import { shellTag } from './_shell.mjs';
 
 const root = join(homedir(), '.claude', 'projects');
 export const meta = { id: 'claude-code', label: 'Claude Code', root, watch: [{ path: root, recursive: true, match: /\.jsonl$/ }] };
@@ -31,7 +32,7 @@ const isPrompt = (d) => {
 };
 
 const CACHE = cacheFile('claude.json');
-const VER = 'v4'; // bump when parseFile output changes so stale cache entries are not reused
+const VER = 'v5'; // bump when parseFile output changes so stale cache entries are not reused
 const MAX_DUR = 10 * 60 * 1000; // longer "requests" are waiting on the user/tools, not generation
 const TS = /"timestamp":"([^"]+)"/;
 let MEM = null;
@@ -86,7 +87,7 @@ async function parseFile(file) {
     r.reasoning = Math.max(r.reasoning, u.output_tokens_details?.thinking_tokens || 0);
     r.ts = Math.max(r.ts, t);
     if (!r.seen.includes(d.uuid)) { r.seen.push(d.uuid); r.bytes += line.length; }
-    for (const b of m.content || []) if (b.type === 'tool_use' && !r.tools.includes(b.name)) r.tools.push(b.name);
+    for (const b of m.content || []) if (b.type === 'tool_use') for (const n of [b.name, b.name === 'Bash' && shellTag(b.input?.command)]) if (n && !r.tools.includes(n)) r.tools.push(n);
     if (t) prevT = t;
   }
   return { msgs, turns };

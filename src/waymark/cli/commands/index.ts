@@ -292,7 +292,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       if (group === 'stats') {
         const stats = await getStats(db, duration(option(args, '--since')));
         return { code: 0, data: compactOutput
-          ? `Sessions: ${stats.sessions}\nTokens: ${stats.input} input, ${stats.output} output, ${stats.cached} cached\nEstimated cost: ${stats.cost == null ? 'unavailable for these models' : `$${(stats.cost / 1_000_000).toFixed(4)}`}\nWeft adoption: ${stats.adoption.percent}% (${stats.adoption.weftCalls} Weft calls vs ${stats.adoption.explorationCalls} Grep/Glob/Read calls)\nReturned tokens: ${stats.toolTokens.returned} (baseline ${stats.toolTokens.baseline})\nPrompt hook: ${stats.promptHook.injections} injections, ${stats.promptHook.returned} tokens (pointing at ${stats.promptHook.baseline} tokens of files)`
+          ? `Sessions: ${stats.sessions}\nTokens: ${stats.input} input, ${stats.output} output, ${stats.cached} cached\nEstimated cost: ${stats.cost == null ? 'unavailable for these models' : `$${(stats.cost / 1_000_000).toFixed(4)}`}\nWeft adoption: ${stats.adoption.percent}% (${stats.adoption.waymarkCalls} Weft calls vs ${stats.adoption.explorationCalls} Grep/Glob/Read calls)\nReturned tokens: ${stats.toolTokens.returned} (baseline ${stats.toolTokens.baseline})\nPrompt hook: ${stats.promptHook.injections} injections, ${stats.promptHook.returned} tokens (pointing at ${stats.promptHook.baseline} tokens of files)`
           : stats };
       }
       if (group === 'sessions') return { code: 0, data: await listSessions(db, requireCount(option(args, '--limit'), '--limit', 50)) };

@@ -204,11 +204,11 @@ async function waymarkPanel(rs) {
   el.hidden = !w?.available;
   if (el.hidden) return;
   const turnCost = new Map();
-  for (const r of rs) { const k = r.tool + '' + r.turn, t = turnCost.get(k) || turnCost.set(k, { usd: 0, waymark: false }).get(k); t.usd += r.costUsd || 0; t.waymark ||= r.tools.some((n) => n.includes('weft_')); }
+  for (const r of rs) { const k = r.tool + '' + r.turn, t = turnCost.get(k) || turnCost.set(k, { usd: 0, waymark: false }).get(k); t.usd += r.costUsd || 0; t.waymark ||= r.tools.some((n) => n === 'cairn-waymark'); }
   const avg = (on) => { const t = [...turnCost.values()].filter((x) => x.waymark === on); return t.length ? { n: t.length, usd: t.reduce((s, x) => s + x.usd, 0) / t.length } : null; };
   const [yes, no] = [avg(true), avg(false)], a = w.adoption, saved = w.toolTokens.baseline - w.toolTokens.returned;
   put($('#waymark-body'),
-    `Adoption ${a.percent}% of sessions (${fmtN(a.weftCalls)} Waymark calls vs ${fmtN(a.explorationCalls)} Grep/Glob/Read). Tokens returned ${fmtN(w.toolTokens.returned)} vs ${fmtN(w.toolTokens.baseline)} reading whole files: ${fmtN(saved)} saved.` +
+    `Adoption ${a.percent}% of sessions (${fmtN(a.waymarkCalls)} Waymark calls vs ${fmtN(a.explorationCalls)} Grep/Glob/Read/shell search). Tokens returned ${fmtN(w.toolTokens.returned)} vs ${fmtN(w.toolTokens.baseline)} reading whole files: ${fmtN(saved)} saved.` +
     (yes && no ? ` Average API cost per turn: ${fmtUsd(yes.usd)} with Waymark calls (${fmtN(yes.n)} turns) vs ${fmtUsd(no.usd)} without (${fmtN(no.n)}). Correlation, not proof: turns that call Waymark tend to be code-heavy.` : ''));
 }
 

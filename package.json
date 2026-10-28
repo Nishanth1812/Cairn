@@ -25,7 +25,7 @@
     "build": "tsc --noEmit && rolldown -c",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/waymark",
-    "test": "node src/tally/tools/selftest.mjs",
+    "test": "node src/tally/tools/shelltag.mjs && node src/tally/tools/selftest.mjs",
     "check": "npm run lint && npm run typecheck && npm run build && npm test",
     "prepublishOnly": "npm run check",
     "reconcile": "node --no-warnings src/tally/tools/reconcile.mjs"

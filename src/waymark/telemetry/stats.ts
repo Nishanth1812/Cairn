@@ -14,14 +14,21 @@ export async function getStats(db: Database.Database, since?: string) {
     cacheWrite: rows.reduce((sum, row) => sum + row.cacheWrite, 0),
     cost: rows.length ? rows.reduce((sum, row) => sum + micros(row.costUsd), 0) : null,
   };
-  const adoptedSessions = new Set(rows.filter((row) => String(row.tools ?? '').includes('weft_')).map((row) => row.session));
-  const weftCalls = rows.filter((row) => String(row.tools ?? '').includes('weft_')).length;
-  const explorationCalls = rows.filter((row) => /(?:^|,)(Grep|Glob|Read)(?:,|$)/.test(String(row.tools ?? ''))).length;
+  const has = (row: { tools?: unknown }, pattern: RegExp) => pattern.test(String(row.tools ?? ''));
+  const WAYMARK = /(?:^|,)cairn-waymark(?:,|$)/, SEARCH = /(?:^|,)(Grep|Glob|Read|shell-search)(?:,|$)/;
+  const adoptedSessions = new Set(rows.filter((row) => has(row, WAYMARK)).map((row) => row.session));
+  const byAgent: Record<string, { waymark: number; search: number }> = {};
+  for (const row of rows) {
+    const entry = (byAgent[row.tool] ??= { waymark: 0, search: 0 });
+    if (has(row, WAYMARK)) entry.waymark++;
+    if (has(row, SEARCH)) entry.search++;
+  }
   const adoption = {
     percent: usage.sessions ? Math.round(adoptedSessions.size * 100 / usage.sessions) : 0,
-    sessionsUsingWeft: adoptedSessions.size,
-    weftCalls,
-    explorationCalls,
+    sessionsUsingWaymark: adoptedSessions.size,
+    waymarkCalls: rows.filter((row) => has(row, WAYMARK)).length,
+    explorationCalls: rows.filter((row) => has(row, SEARCH)).length,
+    byAgent,
   };
   const toolCalls = (hook: boolean) => db.prepare(`SELECT COUNT(*) AS calls, COALESCE(SUM(returned_tokens),0) AS returned, COALESCE(SUM(baseline_tokens),0) AS baseline FROM tool_calls WHERE tool ${hook ? '=' : '!='} 'hook_prompt' AND (? IS NULL OR observed_at>=?)`)
     .get(since ?? null, since ?? null) as { calls: number; returned: number; baseline: number };
