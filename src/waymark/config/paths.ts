@@ -1,4 +1,3 @@
-import { realpathSync, mkdirSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -27,16 +26,9 @@ export function getUserPaths(os = platform(), env: NodeJS.ProcessEnv = process.e
   };
 }
 
-export function ensureDir(dirPath: string): void { mkdirSync(dirPath, { recursive: true }); }
-
 export async function normalizeCanonicalPath(path: string): Promise<string> {
   const absolute = resolve(path);
   try { return (await import('node:fs/promises')).realpath(absolute).then((p) => p.replace(/\\/g, '/')); }
   catch { return absolute.replace(/\\/g, '/'); }
 }
 
-export function normalizeCanonicalPathSync(path: string): string {
-  const absolute = resolve(path);
-  try { return realpathSync(absolute).replace(/\\/g, '/'); }
-  catch { return absolute.replace(/\\/g, '/'); }
-}

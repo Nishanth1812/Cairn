@@ -26,69 +26,16 @@ and what your delegated agents burn.
 
 ## Quick start
 
-```bash
-npx token-odometer                 # http://127.0.0.1:4747
-npx -p token-odometer token-odometer-stats --line   # today in one line, for a status bar
-```
-
-Needs Node 24 or newer (it uses the built-in `node:sqlite`); older versions get a clear message.
-Zero npm dependencies, no build step, no account. From a clone, `node --no-warnings server.mjs` does the same.
+Part of [Cairn](../../README.md): run it with `cairn tally`.
 
 ```bash
-npm start              # dashboard
-npm run stats          # same numbers in the terminal (--line one-liner, --watch live, --open browser, --compact small window)
-npm test               # verify every collector against 8 invariants
+cairn tally serve          # dashboard on http://127.0.0.1:4747
+cairn tally --line         # today in one line, for a status bar
+cairn tally --last         # the latest turn: cost, tokens, cache hit
+cairn tally --watch        # the same numbers in the terminal, live
 ```
 
-### Export for spreadsheets, scripts and CI
-
-```bash
-token-odometer-stats --csv --range=30d --by=day        # cost and tokens per day
-token-odometer-stats --json --range=7d --by=project    # per project: who burned what
-token-odometer-stats --csv --range=1d                  # every request
-```
-
-`--range` is `1d`, `7d`, `30d` or `All`; `--by` is `day`, `tool`, `model` or `project` (omit it for one row per request).
-
-### Why this one
-
-Other trackers exist — [ccusage](https://github.com/ryoppippi/ccusage) and [tokscale](https://github.com/junhoyeo/tokscale)
-cover more tools than this does, so use them if breadth is what you need. Token Odometer is for when you want to know:
-
-- **what caching saves you** in dollars, not just that it exists;
-- **how fast each model really answers** (measured tokens/sec), not just how much it costs;
-- **what one prompt costs end to end**, subagents included;
-- **that the numbers are right** — totals are reconciled against each tool's own counters (see [Verifying it](#verifying-it));
-- **all of it live**, in one local page, across every tool you use.
-
-## What you get
-
-| Section | The question it answers |
-|---|---|
-| **Last 24 hours** | Tokens processed, the burn rate over the last 5 minutes, what is working right now, API-equivalent cost, cache hit, plan limits, and the latest requests. |
-| **History** | For 1d / 7d / 30d / All: tokens, cost and what caching saved, cache hit, speed, usage over time by tool, usage by model, and the heaviest turns. |
-
-How every number is measured is in the footer of the page.
-
-![Token Odometer — Overview](docs/screenshot-overview.png)
-
-## Quick start
-
-```bash
-git clone <this repo> token-odometer
-cd token-odometer
-node --no-warnings server.mjs      # http://127.0.0.1:4747
-```
-
-There is nothing to install. Node 24 and its standard library are the whole dependency list —
-`node:sqlite`, `node:readline`, `node:http`. No build step, no bundler, no npm install.
-
-```bash
-npm start              # same as above
-npm run stats          # same numbers in the terminal (--line one-liner, --watch live, --open browser, --compact small window)
-npm test               # verify every collector against 8 invariants
-npm run stats:watch    # the same numbers in your terminal, live
-```
+Needs Node 24 or newer (it uses the built-in `node:sqlite`); there is nothing else to install.
 
 ## What you get
 
@@ -129,14 +76,14 @@ Where a value cannot be derived from the logs, the dashboard shows a dash instea
 Missing a tool? A collector is one file — see the [collector contract](docs/CONTRACT.md).
 
 All read-only. The server binds to `127.0.0.1` and never talks to the network. The only things it
-writes are its own parse caches (`.cache/` in a clone, `~/.token-odometer/` when installed from npm, or `$TOKEN_ODOMETER_CACHE`), plus short-lived copies of the OpenCode and
+writes are its own parse caches (`.cache/` inside this folder, or `$TOKEN_ODOMETER_CACHE`), plus short-lived copies of the OpenCode and
 Antigravity SQLite files in your OS temp folder — those are deleted as soon as they are read.
 
 ## Verifying it
 
 ```bash
-node tools/selftest.mjs          # human-readable report
-node tools/selftest.mjs --json   # machine-readable
+npm test                         # human-readable report
+node src/tally/tools/selftest.mjs --json   # machine-readable
 ```
 
 The harness checks every collector for: token sanity, no double counting, cache ratio in range,
@@ -148,7 +95,7 @@ The self-test only checks that numbers are internally consistent. To check that 
 
 ```bash
 npm run reconcile                # OpenCode + Codex (seconds)
-node --no-warnings tools/reconcile.mjs --claude   # also re-counts every raw Claude log by requestId (~1 min)
+node --no-warnings src/tally/tools/reconcile.mjs --claude   # also re-counts every raw Claude log by requestId (~1 min)
 ```
 
 | Source | Independent counter | Result on the author's data |

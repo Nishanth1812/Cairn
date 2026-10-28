@@ -43,7 +43,7 @@ const paths = getUserPaths();
 const dbFile = join(paths.state, 'weft.db');
 
 function database(required = true): Database.Database {
-  if (required && !existsSync(dbFile)) fail('Weft is not initialized. Run `weft init` first.', 3);
+  if (required && !existsSync(dbFile)) fail('Waymark is not initialized. Run `cairn waymark init` first.', 3);
   const db = openDatabase(paths.state);
   try { migrate(db); } catch (error) { db.close(); throw error; }
   return db;
@@ -79,7 +79,7 @@ function repoRow(db: Database.Database, query?: string): { id: string; root_path
   const match = query ? rows.find((row) => row.id === query || row.display_name.toLowerCase() === query.toLowerCase() || same(row.root_path, resolve(query)))
     : rows.find((row) => same(row.root_path, root));
   if (match) return match;
-  if (!query && !rows.length) fail('No repositories are registered. Run `weft repos register` first.', 3);
+  if (!query && !rows.length) fail('No repositories are registered. Run `cairn waymark repos register` first.', 3);
   if (!query) fail(`Current directory is not registered: ${root}`, 3);
   fail(`Repository not found: ${query}`, 3);
 }
@@ -142,18 +142,18 @@ export async function runCommand(args: string[], compactOutput = false): Promise
   }
   if (group === 'auto') {
     const action = sub;
-    if (!['on', 'off', 'status'].includes(action ?? '')) fail('Use `weft auto on|off|status`.', 2);
+    if (!['on', 'off', 'status'].includes(action ?? '')) fail('Use `cairn waymark auto on|off|status`.', 2);
     const config = await loadConfig();
     if (action !== 'status') { config.autoOnboard = action === 'on'; await saveConfig(config); }
     return { code: 0, data: { autoOnboard: config.autoOnboard } };
   }
   if (group === 'doctor') {
-    if (!existsSync(dbFile) && !args.includes('--repair')) fail('Weft is not initialized. Run `weft init` first.', 3);
+    if (!existsSync(dbFile) && !args.includes('--repair')) fail('Waymark is not initialized. Run `cairn waymark init` first.', 3);
     const preflight = await repairCorruptDatabase(paths.state, args.includes('--repair'));
     if (preflight.integrity !== 'ok' && !preflight.backup && preflight.integrity !== 'missing') {
       const home = process.env.HOME ?? process.env.USERPROFILE ?? process.cwd();
       const integrations = await checkIntegrations(home);
-      return { code: 6, data: { node: process.version, database: preflight.integrity, repositories: null, weftOnPath: commandOnPath('cairn'), integrations }, warnings: [`SQLite quick_check: ${preflight.integrity}`, 'Run `weft doctor --repair` to move the damaged database aside and create a fresh one.'] };
+      return { code: 6, data: { node: process.version, database: preflight.integrity, repositories: null, weftOnPath: commandOnPath('cairn'), integrations }, warnings: [`SQLite quick_check: ${preflight.integrity}`, 'Run `cairn waymark doctor --repair` to move the damaged database aside and create a fresh one.'] };
     }
     const db = database(false);
     try {
@@ -175,7 +175,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
     // Calling node on the real CLI path skips the npm shim (~270ms per hook on Windows); --portable keeps plain `weft`.
     if (sub === 'install') return { code: 0, data: await installClaudeHooks({ ...options, bin: args.includes('--portable') || !process.argv[1] ? 'cairn waymark' : `node "${realpathSync(resolve(process.argv[1])).replace(/\\/g, '/')}"` }) };
     if (sub === 'uninstall') return { code: 0, data: await uninstallClaudeHooks(options) };
-    fail('Use `weft hooks install|uninstall [--global] [--dry-run]`.', 2);
+    fail('Use `cairn waymark hooks install|uninstall [--global] [--dry-run]`.', 2);
   }
   if (group === 'onboard') {
     const target = positional(args.slice(1))[0] ?? process.cwd();
@@ -192,7 +192,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
   }
   if (group === 'instructions') {
     const action = sub;
-    if (action !== 'sync' && action !== 'check') fail('Use `weft instructions sync` or `check`.', 2);
+    if (action !== 'sync' && action !== 'check') fail('Use `cairn waymark instructions sync` or `check`.', 2);
     const root = await getGitRoot(process.cwd()); if (!root) fail('Current directory is not a Git repository.', 3);
     const dry = args.includes('--dry-run') || action === 'check';
     const checks = await Promise.all([
@@ -219,24 +219,24 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       } finally { db.close(); }
     }
     if (sub === 'unregister') {
-      const name = positional(rest)[0]; if (!name) fail('Usage: weft repos unregister <repo>', 2);
+      const name = positional(rest)[0]; if (!name) fail('Usage: cairn waymark repos unregister <repo>', 2);
       const db = database(); try { const repo = repoRow(db, name); db.prepare('DELETE FROM repositories WHERE id = ?').run(repo.id); return { code: 0, data: { unregistered: repo.display_name } }; } finally { db.close(); }
     }
     if (sub === 'fuzzy') {
-      const query = positional(rest).join(' '); if (!query) fail('Usage: weft repos fuzzy <query>', 2);
+      const query = positional(rest).join(' '); if (!query) fail('Usage: cairn waymark repos fuzzy <query>', 2);
       const db = database(); try { const rows = allRepos(db); const result = fuzzyFindRepo(query, rows.map(({ name, rootPath, registeredAt }) => ({ name, rootPath, registeredAt }))); return { code: result.match ? 0 : 4, data: result, warnings: result.match ? [] : ['No unique repository match.'] }; } finally { db.close(); }
     }
     if (sub === 'status') {
       const db = database(); try { const repo = repoRow(db, positional(rest)[0]); const git = await getWorkingTreeStatus(repo.root_path); const index = db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repo.id); const config = db.prepare('SELECT config_json FROM repositories WHERE id = ?').get(repo.id) as { config_json: string }; const note = (JSON.parse(config.config_json) as { weftOnboardingNote?: string }).weftOnboardingNote; return { code: 0, data: { repo, git, index, ...(note ? { onboardingNote: note } : {}) } }; } finally { db.close(); }
     }
-    fail('Use `weft repos register|unregister|list|fuzzy|status`.', 2);
+    fail('Use `cairn waymark repos register|unregister|list|fuzzy|status`.', 2);
   }
   if (group === 'index') {
     const db = database(); try { const repo = repoRow(db, positional(args.slice(1))[0]); const config = await loadConfig(); const note = await indexWithinLimit(repo.root_path, config.maxTrackedFiles, db, repo.id); return note ? { code: 0, data: { skipped: true, note } } : { code: 0, data: await indexRepository(db, repo.id, repo.root_path, { force: args.includes('--force') }) }; } finally { db.close(); }
   }
   if (group === 'search' || group === 'context') {
     const values = positional(args.slice(1));
-    if (!values.length) fail(`Usage: weft ${group} <query> [repo]`, 2);
+    if (!values.length) fail(`Usage: cairn waymark ${group} <query> [repo]`, 2);
     const db = database(); try {
       let repoIndex = -1;
       for (let i = values.length - 1; i >= 0; i--) {
@@ -244,7 +244,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       }
       const repoArg = repoIndex < 0 ? undefined : values[repoIndex];
       const query = values.filter((_value, index) => index !== repoIndex).join(' ');
-      if (!query) fail(`Usage: weft ${group} <query> [repo]`, 2);
+      if (!query) fail(`Usage: cairn waymark ${group} <query> [repo]`, 2);
       const repo = repoRow(db, repoArg);
       if (group === 'search') {
         const hits = searchChunks(db, repo.id, query, requireCount(option(args, '--limit'), '--limit', 20));
@@ -261,16 +261,16 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         const parts = positional(rest); const repos = allRepos(db); const last = parts.at(-1);
         const target = last ? repos.find((repo) => repo.name.toLowerCase() === last.toLowerCase() || repo.id === last || repo.rootPath.toLowerCase() === resolve(last).toLowerCase()) : undefined;
         const title = (target ? parts.slice(0, -1) : parts).join(' ');
-        if (!title) fail('Usage: weft task start <title> [repo]', 2);
+        if (!title) fail('Usage: cairn waymark task start <title> [repo]', 2);
         return { code: 0, data: createTask(db, repoRow(db, target?.id).id, title) };
       }
-      if (sub === 'resume') { const id = positional(rest)[0]; if (!id) fail('Usage: weft task resume <id>', 2); const task = db.prepare('SELECT repo_id FROM tasks WHERE id = ?').get(id) as { repo_id: string } | undefined; if (!task) fail(`Task not found: ${id}`, 3); const repo = repoRow(db, task.repo_id); const git = await getWorkingTreeStatus(repo.root_path); const fingerprint = computeWorkingTreeFingerprint(git, await getHeadCommit(repo.root_path) ?? '', git.branch); return { code: 0, data: resumeTask(db, id, fingerprint) }; }
-      if (sub === 'checkpoint') { const id = positional(rest)[0]; if (!id) fail('Usage: weft task checkpoint <id>', 2); const task = db.prepare('SELECT repo_id FROM tasks WHERE id = ?').get(id) as { repo_id: string } | undefined; if (!task) fail(`Task not found: ${id}`, 3); const repo = repoRow(db, task.repo_id); const git = await getWorkingTreeStatus(repo.root_path); const fingerprint = computeWorkingTreeFingerprint(git, await getHeadCommit(repo.root_path) ?? '', git.branch); return { code: 0, data: saveCheckpoint(db, { taskId: id, workingTreeFingerprint: fingerprint, objective: '', status: 'active', findings: [], decisions: [], verification: [], nextAction: '' }) }; }
-      fail('Use `weft task start|resume|checkpoint`.', 2);
+      if (sub === 'resume') { const id = positional(rest)[0]; if (!id) fail('Usage: cairn waymark task resume <id>', 2); const task = db.prepare('SELECT repo_id FROM tasks WHERE id = ?').get(id) as { repo_id: string } | undefined; if (!task) fail(`Task not found: ${id}`, 3); const repo = repoRow(db, task.repo_id); const git = await getWorkingTreeStatus(repo.root_path); const fingerprint = computeWorkingTreeFingerprint(git, await getHeadCommit(repo.root_path) ?? '', git.branch); return { code: 0, data: resumeTask(db, id, fingerprint) }; }
+      if (sub === 'checkpoint') { const id = positional(rest)[0]; if (!id) fail('Usage: cairn waymark task checkpoint <id>', 2); const task = db.prepare('SELECT repo_id FROM tasks WHERE id = ?').get(id) as { repo_id: string } | undefined; if (!task) fail(`Task not found: ${id}`, 3); const repo = repoRow(db, task.repo_id); const git = await getWorkingTreeStatus(repo.root_path); const fingerprint = computeWorkingTreeFingerprint(git, await getHeadCommit(repo.root_path) ?? '', git.branch); return { code: 0, data: saveCheckpoint(db, { taskId: id, workingTreeFingerprint: fingerprint, objective: '', status: 'active', findings: [], decisions: [], verification: [], nextAction: '' }) }; }
+      fail('Use `cairn waymark task start|resume|checkpoint`.', 2);
     } finally { db.close(); }
   }
   if (group === 'checkpoint') {
-    const id = sub; if (!id) fail('Usage: weft checkpoint <id>', 2);
+    const id = sub; if (!id) fail('Usage: cairn waymark checkpoint <id>', 2);
     const db = database(); try {
       const task = db.prepare('SELECT repo_id FROM tasks WHERE id = ?').get(id) as { repo_id: string } | undefined;
       if (!task) fail(`Task not found: ${id}`, 3);
@@ -281,9 +281,9 @@ export async function runCommand(args: string[], compactOutput = false): Promise
   }
   if (group === 'intent') {
     const path = join(paths.instructions, 'intent.md');
-    if (sub === 'show') { if (!existsSync(path)) fail('intent.md is missing. Run `weft init` first.', 3); return { code: 0, data: parseIntent(await readFile(path, 'utf8')) }; }
+    if (sub === 'show') { if (!existsSync(path)) fail('intent.md is missing. Run `cairn waymark init` first.', 3); return { code: 0, data: parseIntent(await readFile(path, 'utf8')) }; }
     if (sub === 'edit') { await mkdir(paths.instructions, { recursive: true }); if (!existsSync(path)) await writeFile(path, generateDefaultIntent(), 'utf8'); const editor = process.env.EDITOR ?? process.env.VISUAL; if (!editor) fail('$EDITOR is not set.', 3); await new Promise<void>((resolvePromise, reject) => { const child = spawn(editor, [path], { stdio: 'inherit' }); child.once('error', reject); child.once('exit', (code: number | null) => code === 0 ? resolvePromise() : reject(new Error(`Editor exited with code ${code}`))); }); return { code: 0, data: { path } }; }
-    fail('Use `weft intent show|edit`.', 2);
+    fail('Use `cairn waymark intent show|edit`.', 2);
   }
   if (group === 'health') { const db = database(); try { const repo = repoRow(db, positional(args.slice(1))[0]); const data = await checkRepoHealth(repo.root_path); return { code: findings(data) ? 4 : 0, data, warnings: findings(data) ? ['Health findings were reported.'] : [] }; } finally { db.close(); } }
   if (group === 'portfolio') { const db = database(); try { const repos = allRepos(db).map((repo) => ({ name: repo.name, rootPath: repo.rootPath, registeredAt: repo.registeredAt })); const data = await generatePortfolioSummary(repos); return { code: findings(data.totals) ? 4 : 0, data }; } finally { db.close(); } }

@@ -5,12 +5,12 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Nishanth1812/Weft.git"
+    "url": "https://github.com/Nishanth1812/Cairn.git"
   },
   "bugs": {
-    "url": "https://github.com/Nishanth1812/Weft/issues"
+    "url": "https://github.com/Nishanth1812/Cairn/issues"
   },
-  "homepage": "https://github.com/Nishanth1812/Weft#readme",
+  "homepage": "https://github.com/Nishanth1812/Cairn#readme",
   "bin": {
     "cairn": "./bin/cairn.mjs"
   },
@@ -27,7 +27,8 @@
     "lint": "eslint src/waymark",
     "test": "node src/tally/tools/selftest.mjs",
     "check": "npm run lint && npm run typecheck && npm run build && npm test",
-    "prepublishOnly": "npm run check"
+    "prepublishOnly": "npm run check",
+    "reconcile": "node --no-warnings src/tally/tools/reconcile.mjs"
   },
   "keywords": [
     "developer-tools",

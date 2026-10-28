@@ -20,7 +20,7 @@ Gzipped JSON `{ cols, dict, rows, status, limits, now }` used by the dashboard. 
 
 ## `GET /api/weft`
 
-Runs `weft stats --json` (`WEFT_BIN` or `weft` on PATH), cached 60 s. Returns `{ available: false }` when Weft is missing.
+Runs `cairn waymark stats --json` (`WEFT_BIN` or `weft` on PATH), cached 60 s. Returns `{ available: false }` when Weft is missing.
 
 ## Per-response cost line (Claude Code)
 

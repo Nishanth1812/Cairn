@@ -1,19 +1,5 @@
-import { basename } from 'node:path';
-import { getGitRoot } from '../gitstate/gitRunner.js';
-import { normalizeCanonicalPath } from '../../config/paths.js';
 
 export interface RepoEntry { name: string; rootPath: string; registeredAt: string }
-
-export async function registerRepo(path: string, repos: RepoEntry[], name = basename(path)): Promise<RepoEntry> {
-  const gitRoot = await getGitRoot(path);
-  if (!gitRoot) throw new Error(`Not a Git repository: ${path}`);
-  const rootPath = await normalizeCanonicalPath(gitRoot);
-  const existing = repos.find((repo) => repo.rootPath.toLowerCase() === rootPath.toLowerCase());
-  if (existing) return existing;
-  const entry = { name: name.trim() || basename(rootPath), rootPath, registeredAt: new Date().toISOString() };
-  repos.push(entry);
-  return entry;
-}
 
 function rank(query: string, name: string): number {
   const q = query.trim().toLocaleLowerCase(); const n = name.toLocaleLowerCase();

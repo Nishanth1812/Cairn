@@ -8,9 +8,9 @@ import { redactDeep, redactSafe } from '../core/security/redactor.js';
 export interface CliIo { stdout: (text: string) => void; stderr: (text: string) => void }
 export interface CliResult { code: number; data?: unknown; warnings?: string[]; errors?: string[]; status?: string }
 
-const HELP = `weft — local-first developer efficiency tools
+const HELP = `cairn waymark — local-first code index and task memory for AI coding agents
 
-Usage: weft <command> [options]
+Usage: cairn waymark <command> [options]
 
 Commands: init, doctor, onboard, instructions, repos, index, search, context, task,
           intent, health, portfolio, costs (stats), cache, sessions, bench,

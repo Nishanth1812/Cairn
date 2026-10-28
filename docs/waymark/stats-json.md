@@ -1,4 +1,4 @@
-# `weft stats --json`
+# `cairn waymark stats --json`
 
 Shape returned by `getStats` (in `src/telemetry/stats.ts`), printed as JSON when `--json` is passed (and included in the `data` field of every `stats`/`cache`/`sessions`/`costs` command result).
 
