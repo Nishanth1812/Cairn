@@ -1,0 +1,18 @@
+{
+  "name": "cairn",
+  "version": "0.1.0",
+  "description": "One command for Waymark (code index for AI coding agents) and Tally (token and cost tracker).",
+  "type": "module",
+  "bin": { "cairn": "bin/cairn.mjs" },
+  "engines": { "node": ">=24" },
+  "files": ["bin"],
+  "scripts": {
+    "install:all": "npm --prefix tools/weft ci && npm --prefix tools/odometer install",
+    "build": "npm --prefix tools/weft run build",
+    "lint": "npm --prefix tools/weft run lint",
+    "typecheck": "npm --prefix tools/weft run typecheck",
+    "test": "npm --prefix tools/odometer test",
+    "check": "npm run lint && npm run typecheck && npm run build && npm test"
+  },
+  "license": "MIT"
+}

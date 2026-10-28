@@ -9,6 +9,18 @@ Everything here is Node and TypeScript.
 | Weft | Local-first code index and MCP server for AI coding assistants, with hooks, task checkpoints and token cost stats | [tools/weft](tools/weft) |
 | Token Odometer | Local dashboard for tokens, cache, speed and cost across Claude Code, Codex, OpenCode and Antigravity | [tools/odometer](tools/odometer) |
 
+## The `cairn` command
+
+```sh
+npm run install:all && npm run build
+node bin/cairn.mjs waymark context "where is auth handled"   # code index (Weft today)
+node bin/cairn.mjs tally --last                              # last turn's tokens and cost (Token Odometer today)
+node bin/cairn.mjs dashboard                                 # open the usage dashboard
+node bin/cairn.mjs doctor                                    # check both
+```
+
+`cairn` only forwards to the tools, so each still works on its own. Names are moving to Waymark (Weft) and Tally (Token Odometer).
+
 ## Using a tool
 
 Clone the repo and work from the tool's folder. Each one installs and runs by itself:
