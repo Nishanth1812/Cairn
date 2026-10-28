@@ -1,5 +1,5 @@
-import { stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { openDatabase } from '../storage/db.js';
 import { hookGitRoot, repoFor } from './claude.js';
 import { estimateTokens } from '../core/estimate/tokenEstimator.js';
@@ -67,7 +67,16 @@ export async function runPromptHook(options: { cwd?: string; stateDir: string; p
 const LARGE_READ_BYTES = 32 * 1024;
 
 /** PreToolUse(Read|Grep|Glob): a whole-file read of a big file, or a grep/glob sweep, in an indexed repo costs context on every later turn, so suggest Weft or a ranged read instead. Never blocks. */
-export async function runReadNudge(options: { cwd?: string; stateDir: string; filePath?: string; ranged?: boolean; tool?: string }): Promise<string> {
+async function firstSweep(stateDir: string, session: string): Promise<boolean> {
+  const dir = join(stateDir, 'sweep-gate');
+  try {
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, session.replace(/[^\w-]/g, '_')), '', { flag: 'wx' });
+    return true;
+  } catch { return false; }
+}
+
+export async function runReadNudge(options: { cwd?: string; stateDir: string; filePath?: string; ranged?: boolean; tool?: string; session?: string }): Promise<string> {
   const sweep = options.tool === 'Grep' || options.tool === 'Glob';
   if (!sweep && (!options.filePath || options.ranged || /(?:lock\.json|\.lock|\.min\.\w+|\.map)$/i.test(options.filePath))) return '';
   const size = sweep || !options.filePath ? 0 : await stat(options.filePath).then((info) => (info.isFile() ? info.size : 0), () => 0);
@@ -78,6 +87,10 @@ export async function runReadNudge(options: { cwd?: string; stateDir: string; fi
   try {
     if (!repoFor(db, root)) return '';
   } finally { db.close(); }
+  // Trial: deny the first Grep/Glob of each session (and subagent) so Waymark gets tried; the retry goes through.
+  if (sweep && options.session && await firstSweep(options.stateDir, options.session)) {
+    return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Waymark has this repo indexed. Run `cairn waymark search "<term>"` or `cairn waymark context "<question>"` in the shell first. If it misses an exact string, repeat this Grep/Glob and it will go through.' } });
+  }
   const tokens = Math.ceil(size / 4 * 1.1);
   const additionalContext = sweep ? 'Waymark has this repo indexed: run `cairn waymark search "<term>"` or `cairn waymark context "<question>"` first (ranked, token-budgeted); use Grep or Glob only for an exact string it missed.' : `This file is about ${Math.round(tokens / 1000)}K tokens and every later turn re-reads it from context. Run cairn waymark search "<term>" to find the part you need, then Read with offset and limit.`;
   return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext } });
