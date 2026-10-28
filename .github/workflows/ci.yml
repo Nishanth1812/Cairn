@@ -26,8 +26,6 @@ jobs:
         with:
           node-version: 24.x
           cache: npm
-          cache-dependency-path: tools/weft/package-lock.json
-      - run: npm run install:all
+      - run: npm ci
       - run: npm run check
-      - run: node bin/cairn.mjs doctor
-        continue-on-error: true
+      - run: node .github/scripts/pack-smoke.mjs

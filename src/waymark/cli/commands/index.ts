@@ -158,7 +158,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
     if (preflight.integrity !== 'ok' && !preflight.backup && preflight.integrity !== 'missing') {
       const home = process.env.HOME ?? process.env.USERPROFILE ?? process.cwd();
       const integrations = await checkIntegrations(home);
-      return { code: 6, data: { node: process.version, database: preflight.integrity, repositories: null, weftOnPath: commandOnPath('weft'), integrations }, warnings: [`SQLite quick_check: ${preflight.integrity}`, 'Run `weft doctor --repair` to move the damaged database aside and create a fresh one.'] };
+      return { code: 6, data: { node: process.version, database: preflight.integrity, repositories: null, weftOnPath: commandOnPath('cairn'), integrations }, warnings: [`SQLite quick_check: ${preflight.integrity}`, 'Run `weft doctor --repair` to move the damaged database aside and create a fresh one.'] };
     }
     const db = database(false);
     try {
@@ -168,7 +168,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       const integrations = await checkIntegrations(home);
       const hooksLog = await readFile(join(paths.state, 'hooks.log'), 'utf8').then(value => value.trim().slice(-500)).catch(() => '');
       const odometer = await odometerReachable();
-      const data = { node: process.version, database: integrity, repairedFrom: preflight.backup ?? null, hookLog: hooksLog, repositories: allRepos(db).length, weftOnPath: commandOnPath('weft'), integrations, odometer: odometer ? 'reachable' : 'unreachable' };
+      const data = { node: process.version, database: integrity, repairedFrom: preflight.backup ?? null, hookLog: hooksLog, repositories: allRepos(db).length, weftOnPath: commandOnPath('cairn'), integrations, odometer: odometer ? 'reachable' : 'unreachable' };
       const lines = [...integrations.map((item) => `${item.id}: ${item.status}${item.detail ? ` (${item.detail})` : ''}${item.fix ? `; fix: ${item.fix}` : ''}`), `odometer: ${odometer ? 'reachable' : 'unreachable'}`];
       if (compactOutput) return { code: warnings.length ? 6 : 0, data: lines.join('\n'), warnings };
       return { code: warnings.length ? 6 : 0, data, warnings };
@@ -203,7 +203,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
   if (group === 'hooks') {
     const options = { projectRoot: process.cwd(), home: process.env.HOME ?? process.env.USERPROFILE, global: args.includes('--global'), dryRun: args.includes('--dry-run') };
     // Calling node on the real CLI path skips the npm shim (~270ms per hook on Windows); --portable keeps plain `weft`.
-    if (sub === 'install') return { code: 0, data: await installClaudeHooks({ ...options, bin: args.includes('--portable') || !process.argv[1] ? 'weft' : `node "${realpathSync(resolve(process.argv[1])).replace(/\\/g, '/')}"` }) };
+    if (sub === 'install') return { code: 0, data: await installClaudeHooks({ ...options, bin: args.includes('--portable') || !process.argv[1] ? 'cairn waymark' : `node "${realpathSync(resolve(process.argv[1])).replace(/\\/g, '/')}"` }) };
     if (sub === 'uninstall') return { code: 0, data: await uninstallClaudeHooks(options) };
     fail('Use `weft hooks install|uninstall [--global] [--dry-run]`.', 2);
   }

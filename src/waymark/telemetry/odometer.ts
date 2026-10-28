@@ -4,7 +4,8 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 
-const ODOMETER_DIR = join(import.meta.dirname, '..', '..', '..', 'odometer');
+// dist/chunks/<chunk>.js -> repo root
+const ODOMETER_DIR = join(import.meta.dirname, '..', '..', 'src', 'tally');
 const ODOMETER_STATS = join(ODOMETER_DIR, 'stats.mjs');
 const ODOMETER_SERVER = join(ODOMETER_DIR, 'server.mjs');
 export const ODOMETER_URL = 'http://127.0.0.1:4747';
@@ -80,6 +81,6 @@ export async function readOdometer(range: string): Promise<OdometerRow[]> {
     return await fetchOdometer(range);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Token Odometer not found: run npm start in tools/odometer or set TOKEN_ODOMETER_BIN (${message})`);
+    throw new Error(`Token Odometer not found: run cairn tally serve, or set TOKEN_ODOMETER_BIN (${message})`);
   }
 }

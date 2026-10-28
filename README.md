@@ -1,35 +1,31 @@
 # Cairn
 
-A home for the developer tools I build and use day to day. Each tool lives in its own folder under `tools/`, has its own README, and can be used on its own or alongside the others.
+One command for the developer tools I use every day with AI coding agents. Everything runs from the same package and the same process.
 
-Everything here is Node and TypeScript.
-
-| Tool | What it does | Folder |
+| Command | What it does | Source |
 |---|---|---|
-| Weft | Local-first code index and MCP server for AI coding assistants, with hooks, task checkpoints and token cost stats | [tools/weft](tools/weft) |
-| Token Odometer | Local dashboard for tokens, cache, speed and cost across Claude Code, Codex, OpenCode and Antigravity | [tools/odometer](tools/odometer) |
-
-## The `cairn` command
+| `cairn waymark` | Local-first code index and MCP server for coding agents, with hooks, task checkpoints and cost stats (was Weft) | [src/waymark](src/waymark) |
+| `cairn tally` | Tokens, cache, speed and cost across Claude Code, Codex, OpenCode and Antigravity, as a CLI line and a dashboard (was Token Odometer) | [src/tally](src/tally) |
 
 ```sh
-npm run install:all && npm run build
-node bin/cairn.mjs waymark context "where is auth handled"   # code index (Weft today)
-node bin/cairn.mjs tally --last                              # last turn's tokens and cost (Token Odometer today)
-node bin/cairn.mjs dashboard                                 # open the usage dashboard
-node bin/cairn.mjs doctor                                    # check both
+npm ci && npm run build
+node bin/cairn.mjs waymark context "where is auth handled"
+node bin/cairn.mjs tally --last          # last turn's tokens and cost
+node bin/cairn.mjs tally serve           # dashboard on http://127.0.0.1:4747
+node bin/cairn.mjs doctor                # check the setup
 ```
 
-`cairn` only forwards to the tools, so each still works on its own. Names are moving to Waymark (Weft) and Tally (Token Odometer).
+`npm link` puts `cairn` on your PATH. Node 24 or newer.
 
-## Using a tool
+## Layout
 
-Clone the repo and work from the tool's folder. Each one installs and runs by itself:
-
-```sh
-cd tools/weft && npm install && npm run build
-cd tools/odometer && npm start
+```
+bin/cairn.mjs   the command; runs a tool in-process
+src/waymark/    TypeScript, bundled to dist/waymark.js
+src/tally/      plain ESM, no dependencies, runs as is
+tests/          Waymark tests
 ```
 
-## Adding a tool
+## Licence
 
-Add a folder under `tools/`, give it a README, and add a row to the table above.
+GPL-3.0-only (Waymark). Tally's original MIT licence is kept in [src/tally/LICENSE-MIT](src/tally/LICENSE-MIT).

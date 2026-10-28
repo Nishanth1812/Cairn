@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
-const temp = await mkdtemp(join(tmpdir(), 'weft-pack-'));
+const temp = await mkdtemp(join(tmpdir(), 'cairn-pack-'));
 const sandbox = join(temp, 'sandbox');
 const prefix = join(temp, 'prefix');
 const home = join(sandbox, 'home');
@@ -26,7 +26,7 @@ try {
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   const dryRun = JSON.parse(run(npm, ['pack', '--dry-run', '--json'], { quiet: true }));
   const files = dryRun[0].files.map(({ path }) => path);
-  const required = ['LICENSE', 'dist/cli/index.js'];
+  const required = ['LICENSE', 'bin/cairn.mjs', 'dist/waymark.js', 'src/tally/stats.mjs', 'src/tally/server.mjs'];
   const forbidden = files.filter((path) => /^(?:\.claude\/|\.mcp\.json$|tests\/|\.env(?:\.|$))/.test(path));
   if (required.some((path) => !files.includes(path)) || forbidden.length) throw new Error(`Unexpected npm pack contents: missing ${required.filter((path) => !files.includes(path)).join(', ')}; forbidden ${forbidden.join(', ')}`);
   process.stdout.write(`Dry-run package contents: ${files.length} files; required files present; no local harness config, tests, or env files.\n`);
@@ -34,8 +34,8 @@ try {
   const tarball = join(temp, packOutput.trim().split(/\r?\n/).at(-1));
   run(npm, ['install', '--prefix', prefix, tarball]);
 
-  const bin = join(prefix, 'node_modules', '.bin', process.platform === 'win32' ? 'weft.cmd' : 'weft');
-  const invoke = (args) => run(bin, args, { cwd: temp });
+  const bin = join(prefix, 'node_modules', '.bin', process.platform === 'win32' ? 'cairn.cmd' : 'cairn');
+  const invoke = (args) => run(bin, ['waymark', ...args], { cwd: temp });
   invoke(['--version']);
   invoke(['--help']);
   invoke(['init']);
@@ -53,7 +53,7 @@ try {
   }));
   process.stdout.write(`${after.join('\n')}\n`);
   if (after.some((line) => !line.endsWith('Weft entries removed'))) throw new Error('Uninstall left Weft integration entries behind');
-  const sqlite = run(process.execPath, ['-e', "require('better-sqlite3')(':memory:').close(); console.log('better-sqlite3 loaded')"], { cwd: join(prefix, 'node_modules', 'weft') });
+  const sqlite = run(process.execPath, ['-e', "require('better-sqlite3')(':memory:').close(); console.log('better-sqlite3 loaded')"], { cwd: join(prefix, 'node_modules', 'cairn') });
   if (!sqlite.includes('better-sqlite3 loaded')) throw new Error('better-sqlite3 did not load');
 } finally {
   await rm(temp, { recursive: true, force: true });

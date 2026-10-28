@@ -171,7 +171,7 @@ export async function installClaudeHooks(options: { projectRoot?: string; home?:
   for (const event of EVENTS) {
     const entries = [...(updated.hooks?.[event] ?? [])];
     const cleaned = entries.map((entry) => ({ ...entry, hooks: (entry.hooks ?? []).filter((hook) => !isWeftHook(hook)) })).filter((entry) => (entry.hooks ?? []).length);
-    cleaned.push(hookEntry(event, options.bin ?? 'weft'));
+    cleaned.push(hookEntry(event, options.bin ?? 'cairn waymark'));
     updated.hooks![event] = cleaned;
   }
   const content = `${JSON.stringify(updated, null, 2)}\n`;

@@ -1,38 +1,30 @@
 #!/usr/bin/env node
-// cairn <tool> [args]: one front door for the tools in this repo. It only forwards, so each tool still works on its own.
-import { spawnSync } from 'node:child_process';
+// cairn <tool> [args]: the one command. Each tool runs in this process (argv is rewritten to what the tool expects), nothing is spawned.
 import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const at = (...p) => fileURLToPath(new URL(p.join('/'), new URL('..', import.meta.url)));
-// Each tool: the script to run and any fixed arguments before the user's. `usage` with no args shows today's table.
-const TOOLS = {
-  waymark: { script: at('tools/weft/dist/cli/index.js'), build: 'npm --prefix tools/weft run build' },
-  tally: { script: at('tools/odometer/stats.mjs'), pre: ['--no-warnings'] },
-};
-const ALIAS = { code: 'waymark', weft: 'waymark', usage: 'tally', odometer: 'tally' };
+const at = (p) => fileURLToPath(new URL(p, import.meta.url));
+const WAYMARK = at('../dist/waymark.js'), STATS = at('../src/tally/stats.mjs'), SERVER = at('../src/tally/server.mjs');
 const HELP = `cairn <tool> [args]
 
-  waymark (code)   code index, search and task memory      e.g. cairn waymark context "where is auth"
-  tally   (usage)  tokens, cost and cache across agents    e.g. cairn tally --last
-  dashboard        open the Tally dashboard                 (starts it if needed)
-  doctor           check both tools
+  waymark   code index, search, task memory and the MCP server   cairn waymark context "where is auth"
+  tally     tokens, cost and cache across your agents            cairn tally --last      (cairn tally serve: dashboard)
+  doctor    check both tools
 
-Run \`cairn <tool> --help\` for that tool's own options.`;
+Run \`cairn <tool> --help\` for a tool's own options.`;
 
-const run = (script, args, pre = []) => spawnSync(process.execPath, [...pre, script, ...args], { stdio: 'inherit' }).status ?? 1;
+// Hand the process to a tool script: it reads process.argv[1] (its own path) and everything after it.
+const enter = async (script, args) => {
+  if (!existsSync(script)) { console.error(`cairn: ${script} is missing${script === WAYMARK ? ' (run npm run build)' : ''}`); process.exit(1); }
+  process.argv = [process.argv[0], script, ...args];
+  process.removeAllListeners('warning'); // node:sqlite's experimental notice
+  await import(pathToFileURL(script).href);
+};
+
 const [cmd, ...args] = process.argv.slice(2);
-const name = ALIAS[cmd] ?? cmd;
-
-if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') { console.log(HELP); process.exit(0); }
-if (cmd === '--version' || cmd === '-v') { console.log((await import('../package.json', { with: { type: 'json' } })).default.version); process.exit(0); }
-if (cmd === 'dashboard') process.exit(run(TOOLS.tally.script, ['--open'], TOOLS.tally.pre));
-if (cmd === 'doctor') {
-  const a = run(TOOLS.waymark.script, ['doctor']);
-  const b = run(TOOLS.tally.script, ['--line', '--no-start'], TOOLS.tally.pre);
-  process.exit(a || b);
-}
-const tool = TOOLS[name];
-if (!tool) { console.error(`cairn: unknown command "${cmd}"\n\n${HELP}`); process.exit(2); }
-if (!existsSync(tool.script)) { console.error(`cairn: ${name} is not built yet. Run: ${tool.build ?? 'npm install'}`); process.exit(1); }
-process.exit(run(tool.script, args, tool.pre));
+if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') console.log(HELP);
+else if (cmd === '--version' || cmd === '-v') console.log((await import('../package.json', { with: { type: 'json' } })).default.version);
+else if (cmd === 'waymark') await enter(WAYMARK, args);
+else if (cmd === 'tally') args[0] === 'serve' ? await enter(SERVER, args.slice(1)) : await enter(STATS, args);
+else if (cmd === 'doctor') await enter(WAYMARK, ['doctor']);
+else { console.error(`cairn: unknown command "${cmd}"\n\n${HELP}`); process.exitCode = 2; }

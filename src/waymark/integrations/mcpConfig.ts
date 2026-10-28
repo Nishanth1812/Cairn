@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
 export type Harness = 'claude-code' | 'codex' | 'opencode' | 't3';
-const command = { command: 'weft', args: ['mcp', 'serve'] };
+const command = { command: 'cairn', args: ['waymark', 'mcp', 'serve'] };
 
 export function harnessConfigPath(harness: Exclude<Harness, 't3'>, home: string, project?: string): string {
   if (harness === 'claude-code') return project ? join(project, '.mcp.json') : join(home, '.claude.json');
@@ -26,12 +26,12 @@ export async function installMcpConfig(harness: Harness, options: { home: string
       // `claude mcp list` is global; avoid a JSON merge when the named server is already there.
       return { path, modified: false };
     }
-    if (await options.runner(['mcp', 'add', '--scope', 'user', 'weft', '--', 'weft', 'mcp', 'serve'], 2000)) return { path, modified: true };
+    if (await options.runner(['mcp', 'add', '--scope', 'user', 'weft', '--', 'cairn', 'waymark', 'mcp', 'serve'], 2000)) return { path, modified: true };
   }
   try { original = await readFile(path, 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   let content: string;
   if (harness === 'codex') {
-    const entry = '[mcp_servers.weft]\ncommand = "weft"\nargs = ["mcp", "serve"]';
+    const entry = '[mcp_servers.weft]\ncommand = "cairn"\nargs = ["waymark", "mcp", "serve"]';
     const pattern = /\[mcp_servers\.weft\][\s\S]*?(?=\n\[|$)/;
     content = pattern.test(original) ? original.replace(pattern, `${entry}${original.endsWith('\n') ? '\n' : ''}`) : `${original}${original && !original.endsWith('\n') ? '\n' : ''}${entry}\n`;
   } else {
@@ -39,7 +39,7 @@ export async function installMcpConfig(harness: Harness, options: { home: string
     try { config = original ? JSON.parse(original) as Record<string, unknown> : {}; } catch { throw new Error(`Invalid JSON harness config: ${path}`); }
     const key = harness === 'claude-code' ? 'mcpServers' : 'mcp';
     const entries = config[key] && typeof config[key] === 'object' ? config[key] as Record<string, unknown> : {};
-    config[key] = { ...entries, weft: harness === 'opencode' ? { type: 'local', command: ['weft', 'mcp', 'serve'], enabled: true } : command };
+    config[key] = { ...entries, weft: harness === 'opencode' ? { type: 'local', command: ['cairn', 'waymark', 'mcp', 'serve'], enabled: true } : command };
     content = `${JSON.stringify(config, null, 2)}\n`;
   }
   const modified = original !== content;

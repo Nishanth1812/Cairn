@@ -32,7 +32,8 @@ const ALIAS = { '/favicon.ico': '/assets/favicon.ico' };
 // Weft's own numbers (savings, adoption), fetched on demand and cached 60 s. Never throws: no Weft just means no panel.
 let weft = { at: 0, body: '{"available":false}' };
 const weftStats = () => Date.now() - weft.at < 6e4 ? weft.body : new Promise((done) => {
-  execFile(process.env.WEFT_BIN || 'weft', ['stats', '--json'], { timeout: 3000, shell: process.platform === 'win32' }, (err, out) => {
+  const [cmd, args] = process.env.WEFT_BIN ? [process.env.WEFT_BIN, ['stats', '--json']] : [process.execPath, [join(here, '..', '..', 'dist', 'waymark.js'), 'stats', '--json']];
+  execFile(cmd, args, { timeout: 3000, shell: !!process.env.WEFT_BIN && process.platform === 'win32' }, (err, out) => {
     let body = '{"available":false}';
     try { if (!err) body = JSON.stringify({ available: true, ...JSON.parse(out).data }); } catch {}
     weft = { at: Date.now(), body }; done(body);

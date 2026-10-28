@@ -2,7 +2,7 @@
 
 Other tools (Weft) read the Odometer through two stable outputs. Nothing is pushed; callers ask when they need it.
 
-## `token-odometer-stats --json [--range=1d|7d|30d|All] [--no-start]`
+## `cairn tally --json [--range=1d|7d|30d|All] [--no-start]`
 
 Per request (omit `--by`): `time, tool, provider, model, project, session, turn, tools, input, cacheRead, cacheWrite, output, reasoning, costUsd, durMs`.
 
@@ -24,9 +24,9 @@ Runs `weft stats --json` (`WEFT_BIN` or `weft` on PATH), cached 60 s. Returns `{
 
 ## Per-response cost line (Claude Code)
 
-`token-odometer-stats --last` prints the latest turn (tokens, cost, cache hit, request count) plus today's total; add `--session=<id>` to pin a session.
+`cairn tally --last` prints the latest turn (tokens, cost, cache hit, request count) plus today's total; add `--session=<id>` to pin a session.
 `--stop-hook` is the same line as a Claude Code `Stop` hook (`{"systemMessage": ...}`, session id read from stdin). It stays quiet unless the turn cost at least `$ODOMETER_MIN_USD` (default 0.25) or today's total crossed another $5.
 
 ```json
-{ "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "node --no-warnings <repo>/tools/odometer/stats.mjs --stop-hook --no-start" }] }] } }
+{ "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "cairn tally --stop-hook --no-start" }] }] } }
 ```
