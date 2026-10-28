@@ -22,9 +22,7 @@ import { syncClaudeInstructions, CLAUDE_CODE_GUIDELINES, installClaudeHooks, uni
 import { runHookCommand } from '../hookCommand.js';
 import { syncCodexInstructions, CODEX_GUIDELINES } from '../../integrations/codex/index.js';
 import { checkInstructions } from '../../integrations/instructions.js';
-import { getCacheDiagnostics, getCostSummary, listSessions } from '../../telemetry/analytics.js';
 import { getStats } from '../../telemetry/stats.js';
-import { odometerReachable, startOdometerServer, ODOMETER_URL } from '../../telemetry/odometer.js';
 import { migrateDevPulse } from '../../migration/devpulse/migrator.js';
 import { openDatabase, repairCorruptDatabase } from '../../storage/db.js';
 import { migrate } from '../../storage/migrator.js';
@@ -162,9 +160,8 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       const home = process.env.HOME ?? process.env.USERPROFILE ?? process.cwd();
       const integrations = await checkIntegrations(home);
       const hooksLog = await readFile(join(paths.state, 'hooks.log'), 'utf8').then(value => value.trim().slice(-500)).catch(() => '');
-      const odometer = await odometerReachable();
-      const data = { node: process.version, database: integrity, repairedFrom: preflight.backup ?? null, hookLog: hooksLog, repositories: allRepos(db).length, weftOnPath: commandOnPath('cairn'), integrations, odometer: odometer ? 'reachable' : 'unreachable' };
-      const lines = [...integrations.map((item) => `${item.id}: ${item.status}${item.detail ? ` (${item.detail})` : ''}${item.fix ? `; fix: ${item.fix}` : ''}`), `odometer: ${odometer ? 'reachable' : 'unreachable'}`];
+      const data = { node: process.version, database: integrity, repairedFrom: preflight.backup ?? null, hookLog: hooksLog, repositories: allRepos(db).length, weftOnPath: commandOnPath('cairn'), integrations };
+      const lines = [...integrations.map((item) => `${item.id}: ${item.status}${item.detail ? ` (${item.detail})` : ''}${item.fix ? `; fix: ${item.fix}` : ''}`)];
       if (compactOutput) return { code: warnings.length ? 6 : 0, data: lines.join('\n'), warnings };
       return { code: warnings.length ? 6 : 0, data, warnings };
     } finally { db.close(); }
@@ -287,27 +284,14 @@ export async function runCommand(args: string[], compactOutput = false): Promise
   }
   if (group === 'health') { const db = database(); try { const repo = repoRow(db, positional(args.slice(1))[0]); const data = await checkRepoHealth(repo.root_path); return { code: findings(data) ? 4 : 0, data, warnings: findings(data) ? ['Health findings were reported.'] : [] }; } finally { db.close(); } }
   if (group === 'portfolio') { const db = database(); try { const repos = allRepos(db).map((repo) => ({ name: repo.name, rootPath: repo.rootPath, registeredAt: repo.registeredAt })); const data = await generatePortfolioSummary(repos); return { code: findings(data.totals) ? 4 : 0, data }; } finally { db.close(); } }
-  if (group === 'costs' || group === 'stats' || group === 'cache' || group === 'sessions') {
+  if (group === 'stats') {
     const db = database(); try {
-      if (group === 'stats') {
-        const stats = await getStats(db, duration(option(args, '--since')));
-        return { code: 0, data: compactOutput
-          ? `Sessions: ${stats.sessions}\nTokens: ${stats.input} input, ${stats.output} output, ${stats.cached} cached\nEstimated cost: ${stats.cost == null ? 'unavailable for these models' : `$${(stats.cost / 1_000_000).toFixed(4)}`}\nWeft adoption: ${stats.adoption.percent}% (${stats.adoption.waymarkCalls} Weft calls vs ${stats.adoption.explorationCalls} Grep/Glob/Read calls)\nReturned tokens: ${stats.toolTokens.returned} (baseline ${stats.toolTokens.baseline})\nPrompt hook: ${stats.promptHook.injections} injections, ${stats.promptHook.returned} tokens (pointing at ${stats.promptHook.baseline} tokens of files)`
-          : stats };
-      }
-      if (group === 'sessions') return { code: 0, data: await listSessions(db, requireCount(option(args, '--limit'), '--limit', 50)) };
-      const since = duration(option(args, '--since'));
-      const by = option(args, '--by') as 'harness' | 'model' | 'repo' | undefined;
-      if (by && !['harness', 'model', 'repo'].includes(by)) fail('--by must be harness, model, or repo', 2);
-      return { code: 0, data: group === 'cache' ? await getCacheDiagnostics(db, { since }) : await getCostSummary(db, { since, by }) };
+      const stats = getStats(db, duration(option(args, '--since')));
+      return { code: 0, data: compactOutput
+        ? `Returned tokens: ${stats.toolTokens.returned} (baseline ${stats.toolTokens.baseline})
+Prompt hook: ${stats.promptHook.injections} injections, ${stats.promptHook.returned} tokens (pointing at ${stats.promptHook.baseline} tokens of files)`
+        : stats };
     } finally { db.close(); }
-  }
-  if (group === 'dashboard') {
-    startOdometerServer();
-    const reachable = await odometerReachable();
-    const data = { url: ODOMETER_URL, reachable };
-    if (compactOutput) return { code: reachable ? 0 : 1, data: `Tally: ${ODOMETER_URL} (${reachable ? 'reachable' : 'unreachable'})`, warnings: reachable ? [] : ['Tally server did not become reachable'] };
-    return { code: reachable ? 0 : 1, data, warnings: reachable ? [] : ['Tally server did not become reachable'] };
   }
   if (group === 'bench' && sub === 'retrieval') {
     const db = database();
@@ -352,7 +336,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
   fail(`Unknown command: ${group ?? ''}`, 2);
 }
 
-const VALUE_FLAGS = new Set(['--name', '--limit', '--budget', '--scope', '--since', '--source', '--by', '--suite', '--harness', '--repo', '--tasks', '--repeat', '--task']);
+const VALUE_FLAGS = new Set(['--name', '--limit', '--budget', '--scope', '--since', '--source', '--suite', '--harness', '--repo', '--tasks', '--repeat', '--task']);
 export const KNOWN_FLAGS = new Set([...VALUE_FLAGS, '--force', '--repair', '--dry-run', '--keep-data', '--interactive', '--yes', '--global', '--suggest', '--uninstall', '--portable']);
 
 function validateFlags(args: string[]): void {

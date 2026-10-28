@@ -4,12 +4,11 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const at = (p) => fileURLToPath(new URL(p, import.meta.url));
-const WAYMARK = at('../dist/waymark.js'), STATS = at('../src/tally/stats.mjs'), SERVER = at('../src/tally/server.mjs');
+const WAYMARK = at('../dist/waymark.js');
 const HELP = `cairn <tool> [args]
 
   waymark   code index, search and task memory                   cairn waymark context "where is auth"
-  tally     tokens, cost and cache across your agents            cairn tally --last      (cairn tally serve: dashboard)
-  doctor    check both tools
+  doctor    check the install
 
 Run \`cairn <tool> --help\` for a tool's own options.`;
 
@@ -25,6 +24,5 @@ const [cmd, ...args] = process.argv.slice(2);
 if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') console.log(HELP);
 else if (cmd === '--version' || cmd === '-v') console.log((await import('../package.json', { with: { type: 'json' } })).default.version);
 else if (cmd === 'waymark') await enter(WAYMARK, args);
-else if (cmd === 'tally') args[0] === 'serve' ? await enter(SERVER, args.slice(1)) : await enter(STATS, args);
 else if (cmd === 'doctor') await enter(WAYMARK, ['doctor']);
 else { console.error(`cairn: unknown command "${cmd}"\n\n${HELP}`); process.exitCode = 2; }

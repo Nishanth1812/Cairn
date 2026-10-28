@@ -13,7 +13,7 @@ const HELP = `cairn waymark — local-first code index and task memory for AI co
 Usage: cairn waymark <command> [options]
 
 Commands: init, doctor, onboard, instructions, repos, index, search, context, task,
-          intent, health, portfolio, costs (stats), cache, sessions, bench,
+          intent, health, portfolio, stats, bench,
           clean, migrate devpulse
 
 Global flags: --json --quiet --verbose --help --version`;
@@ -35,7 +35,7 @@ function commandName(args: string[]): string {
   const group = args.find((arg) => !arg.startsWith('--')) ?? 'help';
   const subcommands = new Set(['instructions', 'repos', 'task', 'intent', 'migrate', 'bench']);
   if (subcommands.has(group)) return `${group} ${args.slice(args.indexOf(group) + 1).find((arg) => !arg.startsWith('--')) ?? ''}`.trim();
-  return group === 'stats' ? 'costs' : group;
+  return group;
 }
 
 export async function runCli(argv = process.argv.slice(2), io: CliIo = { stdout: (text) => process.stdout.write(text), stderr: (text) => process.stderr.write(text) }): Promise<number> {

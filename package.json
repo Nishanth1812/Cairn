@@ -1,7 +1,7 @@
 {
   "name": "cairn",
   "version": "0.1.0",
-  "description": "Cairn: Waymark (code index for AI coding agents) and Tally (token and cost tracker) in one command.",
+  "description": "Cairn: Waymark, a code index for AI coding agents, as one command.",
   "type": "module",
   "repository": {
     "type": "git",
@@ -17,7 +17,6 @@
   "files": [
     "bin",
     "dist",
-    "src/tally",
     "LICENSE"
   ],
   "scripts": {
@@ -25,10 +24,8 @@
     "build": "tsc --noEmit && rolldown -c",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/waymark",
-    "test": "node src/tally/tools/shelltag.mjs && node src/tally/tools/selftest.mjs",
-    "check": "npm run lint && npm run typecheck && npm run build && npm test",
-    "prepublishOnly": "npm run check",
-    "reconcile": "node --no-warnings src/tally/tools/reconcile.mjs"
+    "check": "npm run lint && npm run typecheck && npm run build",
+    "prepublishOnly": "npm run check"
   },
   "keywords": [
     "developer-tools",
@@ -37,9 +34,7 @@
     "indexing",
     "local-first",
     "telemetry",
-    "tokens",
-    "cost",
-    "dashboard"
+    "tokens"
   ],
   "license": "GPL-3.0-only",
   "dependencies": {
