@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Token Odometer — every provider, every request</title>
+<title>Tally — every provider, every request</title>
 <meta name="description" content="Local-first dashboard for AI token usage: how fast each provider answers, how much the cache is saving you, and what every turn really costs. Reads the logs Claude Code, Codex, OpenCode, Gemini CLI and Antigravity already write.">
 <meta name="theme-color" content="#14181d">
 <meta name="color-scheme" content="dark">
@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
 <link rel="manifest" href="/assets/site.webmanifest">
 <meta property="og:type" content="website">
-<meta property="og:title" content="Token Odometer">
+<meta property="og:title" content="Tally">
 <meta property="og:description" content="How fast your models answer, how much the cache is saving you, and what every turn really costs.">
 <meta property="og:image" content="/assets/og.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -26,7 +26,7 @@
       <path d="M16 22 22 12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
       <circle cx="16" cy="22" r="2.4" fill="currentColor"/>
     </svg>
-    <h1>Token Odometer</h1>
+    <h1>Tally</h1>
   </div>
   <div class="bar">
     <span id="live" class="live" title="Refreshes every few seconds"><i></i><span>live</span></span>
@@ -61,9 +61,9 @@
     <h3>Biggest turns <span class="sub">a turn is everything the agent did to answer one prompt</span></h3>
     <div class="scroll"><table id="turns" aria-label="Biggest turns"></table></div>
 
-    <div id="weft" hidden>
-      <h3>Weft <span class="sub">code-search savings, shown only when Weft is installed</span></h3>
-      <div id="weft-body" class="note"></div>
+    <div id="waymark" hidden>
+      <h3>Waymark <span class="sub">code-search savings, shown only when Waymark is installed</span></h3>
+      <div id="waymark-body" class="note"></div>
     </div>
   </section>
 

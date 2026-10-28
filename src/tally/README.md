@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/og.png" alt="Token Odometer" width="720">
+  <img src="assets/og.png" alt="Tally" width="720">
 </p>
 
 <p align="center">
@@ -17,12 +17,12 @@
 You run a lot of AI across a lot of providers. Every harness has its own token counter, its own
 idea of a "request", and its own way of telling you how much you have left. None of them add up.
 
-**Token Odometer** reads the session logs those tools already write, normalises every model call
+**Tally** reads the session logs those tools already write, normalises every model call
 into one record, and shows you the truth about your usage: tokens processed vs. tokens actually
 paid for, cache hit rate over time, real output speed per provider and model, the cost of a turn,
 and what your delegated agents burn.
 
-![Token Odometer — Overview](docs/screenshot-overview.png)
+![Tally — Overview](docs/screenshot-overview.png)
 
 ## Quick start
 
@@ -48,7 +48,7 @@ Needs Node 24 or newer (it uses the built-in `node:sqlite`); there is nothing el
 | **Breakdown** | Where the tokens actually go — by tool call, project or model. |
 | **Method** | How every number is measured, the health of each source, and the docs. |
 
-![Token Odometer — Providers](docs/screenshot-providers.png)
+![Tally — Providers](docs/screenshot-providers.png)
 
 ## The numbers, honestly
 
@@ -76,7 +76,7 @@ Where a value cannot be derived from the logs, the dashboard shows a dash instea
 Missing a tool? A collector is one file — see the [collector contract](docs/CONTRACT.md).
 
 All read-only. The server binds to `127.0.0.1` and never talks to the network. The only things it
-writes are its own parse caches (`.cache/` inside this folder, or `$TOKEN_ODOMETER_CACHE`), plus short-lived copies of the OpenCode and
+writes are its own parse caches (`.cache/` inside this folder, or `$TALLY_CACHE`), plus short-lived copies of the OpenCode and
 Antigravity SQLite files in your OS temp folder — those are deleted as soon as they are read.
 
 ## Verifying it

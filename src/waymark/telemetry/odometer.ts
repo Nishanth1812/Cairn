@@ -11,8 +11,6 @@ const ODOMETER_SERVER = join(ODOMETER_DIR, 'server.mjs');
 export const ODOMETER_URL = 'http://127.0.0.1:4747';
 
 function resolveBinary(): string[] {
-  const bin = process.env.TOKEN_ODOMETER_BIN ?? '';
-  if (bin) return [bin];
   return ['node', '--no-warnings', ODOMETER_STATS];
 }
 
@@ -53,8 +51,6 @@ export function rangeForSince(since?: string): string {
 }
 
 function resolveServerBinary(): string[] {
-  const bin = process.env.TOKEN_ODOMETER_BIN ?? '';
-  if (bin) return [bin];
   return ['node', '--no-warnings', ODOMETER_SERVER];
 }
 
@@ -81,6 +77,6 @@ export async function readOdometer(range: string): Promise<OdometerRow[]> {
     return await fetchOdometer(range);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Token Odometer not found: run cairn tally serve, or set TOKEN_ODOMETER_BIN (${message})`);
+    throw new Error(`Tally not found: run cairn tally serve (${message})`);
   }
 }

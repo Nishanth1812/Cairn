@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// token-odometer-stats [--watch | --line | --last | --stop-hook | --open | --compact | --json | --csv]   quick terminal check: today per tool + last requests (--line: one line for a status bar; --last: the latest turn; --stop-hook: Claude Code Stop hook, prints the latest turn when it cost enough).
+// cairn tally [--watch | --line | --last | --stop-hook | --open | --compact | --json | --csv]   quick terminal check: today per tool + last requests (--line: one line for a status bar; --last: the latest turn; --stop-hook: Claude Code Stop hook, prints the latest turn when it cost enough).
 process.removeAllListeners('warning'); // node:sqlite's experimental notice
 import { gunzipSync } from 'node:zlib';
 import { spawn } from 'node:child_process';
@@ -54,7 +54,7 @@ async function show() {
     if (!end) return;
     const t = mine.filter((r) => r.session === end.session && r.turn === end.turn), sum = (k) => t.reduce((a, r) => a + (r[k] || 0), 0);
     const ctx = sum('ctx'), cost = sum('costUsd'), day = today.reduce((a, r) => a + (r.costUsd || 0), 0), STEP = 5;
-    if (hook && cost < (+process.env.ODOMETER_MIN_USD || 0.25) && Math.floor(day / STEP) === Math.floor((day - cost) / STEP)) return; // quiet unless the turn was pricey or today crossed another $5
+    if (hook && cost < (+process.env.TALLY_MIN_USD || 0.25) && Math.floor(day / STEP) === Math.floor((day - cost) / STEP)) return; // quiet unless the turn was pricey or today crossed another $5
     const turns = new Map(); for (const r of today) turns.set(r.session + r.turn, (turns.get(r.session + r.turn) || 0) + (r.costUsd || 0));
     const typ = turns.size >= 5 ? med([...turns.values()]) : 0, x = typ > 0.005 ? cost / typ : 0, hit = ctx ? Math.round(sum('cacheRead') / ctx * 100) : 0;
     const spd = Math.round(med(t.filter((r) => r.durMs > 0 && r.output >= 30).map((r) => r.output / (r.durMs / 1e3))));
@@ -71,7 +71,7 @@ ${t.length} req · ${n(ctx - sum('cacheRead'))} new · ${n(sum('output'))} out �
     console.log(`today ${n(tot)} tok (${n(fresh)} new) · ~${usd(cost)} API-eq · cache ${ctx ? Math.round(cr / ctx * 100) : 0}% · ${Math.round(spd) || '–'} tok/s`);
     return;
   }
-  const out = [`Token Odometer · today since ${new Date(mid).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · as of ${new Date(now).toLocaleTimeString()}`, ''];
+  const out = [`Tally · today since ${new Date(mid).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · as of ${new Date(now).toLocaleTimeString()}`, ''];
   out.push(pad('tool', 13) + pad('reqs', 7, 1) + pad('processed', 11, 1) + pad('paid-new', 10, 1) + pad('cache', 7, 1) + pad('API-eq $', 10, 1) + pad('tok/s', 7, 1));
   let T = { n: 0, tot: 0, fresh: 0, cost: 0 };
   for (const [t, a] of [...by].sort((x, y) => y[1].tot - x[1].tot)) {

@@ -1,6 +1,6 @@
 {
-  "name": "Token Odometer",
-  "short_name": "Odometer",
+  "name": "Tally",
+  "short_name": "Tally",
   "description": "How fast your models answer, how much the cache is saving you, and what every turn really costs.",
   "start_url": "/",
   "scope": "/",

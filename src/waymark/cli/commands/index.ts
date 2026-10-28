@@ -306,8 +306,8 @@ export async function runCommand(args: string[], compactOutput = false): Promise
     startOdometerServer();
     const reachable = await odometerReachable();
     const data = { url: ODOMETER_URL, reachable };
-    if (compactOutput) return { code: reachable ? 0 : 1, data: `Token Odometer: ${ODOMETER_URL} (${reachable ? 'reachable' : 'unreachable'})`, warnings: reachable ? [] : ['Odometer server did not become reachable'] };
-    return { code: reachable ? 0 : 1, data, warnings: reachable ? [] : ['Odometer server did not become reachable'] };
+    if (compactOutput) return { code: reachable ? 0 : 1, data: `Tally: ${ODOMETER_URL} (${reachable ? 'reachable' : 'unreachable'})`, warnings: reachable ? [] : ['Tally server did not become reachable'] };
+    return { code: reachable ? 0 : 1, data, warnings: reachable ? [] : ['Tally server did not become reachable'] };
   }
   if (group === 'bench' && sub === 'retrieval') {
     const db = database();

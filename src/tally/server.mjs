@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// npx token-odometer [port]  |  node --no-warnings server.mjs [port]  ->  http://127.0.0.1:4747
-if (+process.versions.node.split('.')[0] < 24) { console.error(`Token Odometer needs Node 24 or newer (node:sqlite); this is ${process.version}.\nGet it from https://nodejs.org or run: npx node@24 server.mjs`); process.exit(1); }
+// cairn tally serve [port]  |  node --no-warnings server.mjs [port]  ->  http://127.0.0.1:4747
+if (+process.versions.node.split('.')[0] < 24) { console.error(`Tally needs Node 24 or newer (node:sqlite); this is ${process.version}.\nGet it from https://nodejs.org or run: npx node@24 server.mjs`); process.exit(1); }
 process.removeAllListeners('warning'); // node:sqlite's experimental notice; collectors load after this line, so npx users need no flag
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -29,14 +29,13 @@ const types = {
 // browsers ask for /favicon.ico on their own; we ship the same gauge as an .ico
 const ALIAS = { '/favicon.ico': '/assets/favicon.ico' };
 
-// Weft's own numbers (savings, adoption), fetched on demand and cached 60 s. Never throws: no Weft just means no panel.
-let weft = { at: 0, body: '{"available":false}' };
-const weftStats = () => Date.now() - weft.at < 6e4 ? weft.body : new Promise((done) => {
-  const [cmd, args] = process.env.WEFT_BIN ? [process.env.WEFT_BIN, ['stats', '--json']] : [process.execPath, [join(here, '..', '..', 'dist', 'waymark.js'), 'stats', '--json']];
-  execFile(cmd, args, { timeout: 3000, shell: !!process.env.WEFT_BIN && process.platform === 'win32' }, (err, out) => {
+// Waymark's own numbers (savings, adoption), fetched on demand and cached 60 s. Never throws: no Waymark just means no panel.
+let waymark = { at: 0, body: '{"available":false}' };
+const waymarkStats = () => Date.now() - waymark.at < 6e4 ? waymark.body : new Promise((done) => {
+  execFile(process.execPath, [join(here, '..', '..', 'dist', 'waymark.js'), 'stats', '--json'], { timeout: 3000 }, (err, out) => {
     let body = '{"available":false}';
     try { if (!err) body = JSON.stringify({ available: true, ...JSON.parse(out).data }); } catch {}
-    weft = { at: Date.now(), body }; done(body);
+    waymark = { at: Date.now(), body }; done(body);
   });
 });
 
@@ -49,9 +48,9 @@ createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip', 'cache-control': 'no-store' });
       return res.end(store.payload(q.get('range') || '7d'));
     }
-    if (url.pathname === '/api/weft') {
+    if (url.pathname === '/api/waymark') {
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-      return res.end(await weftStats());
+      return res.end(await waymarkStats());
     }
     const p = ALIAS[url.pathname] || (url.pathname === '/' ? '/index.html' : url.pathname);
     if (p.includes('..')) throw new Error('bad path');
@@ -63,6 +62,6 @@ createServer(async (req, res) => {
     res.writeHead(e.code === 'ENOENT' ? 404 : 500).end(String(e.message));
   }
 }).listen(PORT, '127.0.0.1', () => {
-  console.log(`Token Odometer on http://127.0.0.1:${PORT}`);
+  console.log(`Tally on http://127.0.0.1:${PORT}`);
   store.touch().then(() => console.log('ready'));
 });
