@@ -5,7 +5,7 @@ import { basename, delimiter, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getUserPaths } from '../../config/paths.js';
 import { loadConfig, saveConfig } from '../../config/manager.js';
-import { setupWeft } from '../../integrations/setup.js';
+import { setupWeft, type Harness } from '../../integrations/setup.js';
 import { createTask, resumeTask, saveCheckpoint } from '../../memory/taskManager.js';
 import { checkRepoHealth, type HealthReport } from '../../health/healthChecker.js';
 import { generatePortfolioSummary } from '../../health/portfolio.js';
@@ -18,8 +18,6 @@ import { getGitRoot, getHeadCommit, getWorkingTreeStatus } from '../../core/gits
 import { computeWorkingTreeFingerprint } from '../../core/fingerprint/hasher.js';
 import { normalizeCanonicalPath } from '../../config/paths.js';
 import { fuzzyFindRepo } from '../../core/registry/repoRegistry.js';
-import { onboardWorkspace } from '../../onboarding/workspace.js';
-import { createWorkspaceHandler } from '../../mcp/workspace.js';
 import { syncClaudeInstructions, CLAUDE_CODE_GUIDELINES, installClaudeHooks, uninstallClaudeHooks } from '../../integrations/claude-code/index.js';
 import { runHookCommand } from '../hookCommand.js';
 import { syncCodexInstructions, CODEX_GUIDELINES } from '../../integrations/codex/index.js';
@@ -31,12 +29,9 @@ import { migrateDevPulse } from '../../migration/devpulse/migrator.js';
 import { openDatabase, repairCorruptDatabase } from '../../storage/db.js';
 import { migrate } from '../../storage/migrator.js';
 import type Database from 'better-sqlite3';
-import { installMcpConfig, type Harness } from '../../integrations/mcpConfig.js';
 import { checkIntegrations } from '../../integrations/doctor.js';
-import { findMcpRepo, serveMcp } from '../../mcp/server.js';
 import { runRetrievalBenchmark } from '../../bench/retrieval.js';
-import { loadSuite, runLiveSuite } from '../../bench/live.js';
-import { ensureRepoOnboarded, indexWithinLimit } from '../../onboarding/auto.js';
+import { indexWithinLimit } from '../../onboarding/auto.js';
 import { runVerification } from '../../verification/runner.js';
 import { suggestChecks } from '../../verification/suggest.js';
 import { recordVerification } from '../../memory/taskManager.js';
@@ -174,31 +169,6 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       return { code: warnings.length ? 6 : 0, data, warnings };
     } finally { db.close(); }
   }
-  if (group === 'mcp' && sub === 'serve') {
-    const root = await getGitRoot(process.cwd());
-    if (root) await ensureRepoOnboarded(process.cwd(), { spawnIndex: false });
-    const db = database(false);
-    const repo = root ? findMcpRepo(db, root) : undefined;
-    if (repo) {
-      const index = db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repo.id) as { active_generation: number | null } | undefined;
-      if (!index?.active_generation) {
-        const config = await loadConfig();
-        if (await indexWithinLimit(repo.rootPath, config.maxTrackedFiles, db, repo.id)) { /* tool calls explain the skipped index */ }
-        else await indexRepository(db, repo.id, repo.rootPath);
-      }
-    }
-    // Not inside a repo but above some: serve the child repos as one workspace.
-    const children = root ? [] : await onboardWorkspace(db, process.cwd());
-    serveMcp(db, repo ? { id: repo.id, rootPath: repo.rootPath } : null, undefined, root ? 'not-registered' : 'not-git', children.length ? createWorkspaceHandler(db, children) : undefined);
-    return await new Promise<Result>(() => {});
-  }
-  if (group === 'mcp' && sub === 'install') {
-    const harness = option(rest, '--harness');
-    if (!isHarness(harness)) fail('--harness must be claude-code, codex, opencode, or t3', 2);
-    const home = process.env.HOME ?? process.env.USERPROFILE ?? process.cwd();
-    const result = await installMcpConfig(harness, { home, project: harness === 't3' ? undefined : process.cwd(), dryRun: args.includes('--dry-run') });
-    return { code: 0, data: result };
-  }
   if (group === 'hook') return runHookCommand(sub);
   if (group === 'hooks') {
     const options = { projectRoot: process.cwd(), home: process.env.HOME ?? process.env.USERPROFILE, global: args.includes('--global'), dryRun: args.includes('--dry-run') };
@@ -218,8 +188,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
     const instructions = await Promise.all([
       syncClaudeInstructions(root, CLAUDE_CODE_GUIDELINES), syncCodexInstructions(root, CODEX_GUIDELINES),
     ]);
-    const installed = await Promise.all(harnesses.map((value) => installMcpConfig(value as Harness, { home: process.env.HOME ?? process.env.USERPROFILE ?? process.cwd(), project: root })));
-    return { code: 0, data: { registered: registered.data, indexed: indexed.data, instructions, installed } };
+    return { code: 0, data: { registered: registered.data, indexed: indexed.data, instructions } };
   }
   if (group === 'instructions') {
     const action = sub;
@@ -352,33 +321,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       return { code: 0, data: report };
     } finally { db.close(); }
   }
-  if (group === 'bench' && sub === 'run') {
-    const suitePath = resolve(option(rest, '--suite') ?? 'tests/benchmarks/suites/example.json');
-    const harness = option(rest, '--harness') ?? process.env.WEFT_BENCH_HARNESS;
-    if (!harness) fail('Set --harness "command template containing {prompt}" or WEFT_BENCH_HARNESS.', 2);
-    const tasks = await loadSuite(suitePath);
-    const selected = option(rest, '--tasks')?.split(',').map((id) => id.trim()).filter(Boolean);
-    const filtered = selected ? tasks.filter((task) => selected.includes(task.id)) : tasks;
-    if (!filtered.length || (selected && filtered.length !== new Set(selected).size)) fail('No matching tasks for --tasks.', 2);
-    const repeat = Number(option(rest, '--repeat', '1'));
-    if (!Number.isInteger(repeat) || repeat < 1 || repeat > 100) fail('--repeat must be an integer from 1 to 100.', 2);
-    const estimate = filtered.reduce((sum, task) => sum + (task.estimatedTokens ?? 10_000), 0) * repeat * 3;
-    const plan = `Plan: ${filtered.length} tasks × 3 conditions × ${repeat} repeats; estimated token ceiling ${estimate.toLocaleString('en-US')}.`;
-    if (args.includes('--dry-run')) return { code: 0, data: plan };
-    if (!args.includes('--yes')) fail(`${plan} Rerun with --yes to start the live benchmark.`, 5);
-    const report = await runLiveSuite(Array.from({ length: repeat }, () => filtered).flat(), harness);
-    const successfulResults = Object.fromEntries((['A', 'B', 'C'] as const).map((condition) => [condition, report.results.filter((result) => result.condition === condition && result.success)])) as Record<'A' | 'B' | 'C', typeof report.results>;
-    const successfulCosts = Object.fromEntries((['A', 'B', 'C'] as const).map((condition) => [condition, successfulResults[condition].filter((result) => result.costProvenance === 'provider_reported').map((result) => result.costMicros).sort((left, right) => left - right)])) as Record<'A' | 'B' | 'C', number[]>;
-    const medianCost = (costs: number[]) => costs.length ? costs.length % 2 ? costs[Math.floor(costs.length / 2)]! : (costs[costs.length / 2 - 1]! + costs[costs.length / 2]!) / 2 : 0;
-    const reportedMedian = (condition: 'A' | 'B' | 'C') => successfulCosts[condition].length === successfulResults[condition].length ? medianCost(successfulCosts[condition]) : null;
-    const reportedSpread = (condition: 'A' | 'B' | 'C') => successfulCosts[condition].length === successfulResults[condition].length && successfulCosts[condition].length ? Math.sqrt(report.conditionResults[condition].successfulTaskCostVarianceMicros) : null;
-    const data = { ...report, plan, usageProvenance: 'Each trial labels provider_reported or estimated usage.', successfulTaskCostMedianMicros: Object.fromEntries((['A', 'B', 'C'] as const).map((condition) => [condition, reportedMedian(condition)])), costPerSuccessfulTaskSpreadMicros: Object.fromEntries((['A', 'B', 'C'] as const).map((condition) => [condition, reportedSpread(condition)])) };
-    if (!compactOutput) return { code: 0, data };
-    const money = (micros: number | null) => micros === null ? 'n/a' : `$${(micros / 1_000_000).toFixed(4)}`;
-    const rows = (['A', 'B', 'C'] as const).map((condition) => { const summary = report.conditionResults[condition]; const tokens = report.results.filter((result) => result.condition === condition).reduce((sum, result) => sum + result.tokensUsed, 0); const spread = reportedSpread(condition); return `| ${condition} | ${(summary.passRate * 100).toFixed(0)}% | ${money(reportedMedian(condition))} | ${money(spread === null ? null : spread)} | ${tokens} |`; });
-    return { code: 0, data: ['| Condition | Pass rate | Median cost per successful task | Cost spread (SD) | Tokens |', '|---|---:|---:|---:|---:|', ...rows, '', plan].join('\n') };
-  }
-  if (group === 'bench') fail('Use `weft bench retrieval [--repo <name>] [--json]` or `weft bench run --suite <file> --harness <template>`.', 2);
+  if (group === 'bench') fail('Use `cairn waymark bench retrieval [--repo <name>] [--json]`.', 2);
   if (group === 'clean') {
     const db = database(); try {
       const scope = option(args, '--scope', 'indexes'); if (!['indexes', 'all'].includes(scope!)) fail('--scope must be indexes or all', 2);

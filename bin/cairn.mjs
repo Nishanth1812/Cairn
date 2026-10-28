@@ -7,7 +7,7 @@ const at = (p) => fileURLToPath(new URL(p, import.meta.url));
 const WAYMARK = at('../dist/waymark.js'), STATS = at('../src/tally/stats.mjs'), SERVER = at('../src/tally/server.mjs');
 const HELP = `cairn <tool> [args]
 
-  waymark   code index, search, task memory and the MCP server   cairn waymark context "where is auth"
+  waymark   code index, search and task memory                   cairn waymark context "where is auth"
   tally     tokens, cost and cache across your agents            cairn tally --last      (cairn tally serve: dashboard)
   doctor    check both tools
 

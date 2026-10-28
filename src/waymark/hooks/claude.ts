@@ -111,7 +111,7 @@ export async function runSessionStartHook(options: { cwd?: string; stateDir: str
           if (files.length) lines.push(`Files: ${files.join(', ')}`);
         }
       }
-      lines.push('Explore code with mcp__weft__weft_context / weft_search (load via ToolSearch if deferred) before Grep/Glob/Read; weft_read for line ranges.');
+      lines.push('Explore code with `cairn waymark context "<question>"` or `cairn waymark search "<term>"` in the shell before Grep/Glob/Read; then Read with offset and limit.');
       let output = lines.join('\n');
       while (estimateTokens(output) > 400) { output = lines.slice(0, -1).join('\n') + '\n' + lines.at(-1); if (lines.length <= 1) break; lines.splice(1, 1); }
       return redactSafe(output);

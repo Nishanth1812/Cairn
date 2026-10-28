@@ -4,7 +4,7 @@ One command for the developer tools I use every day with AI coding agents. Every
 
 | Command | What it does | Source |
 |---|---|---|
-| `cairn waymark` | Local-first code index and MCP server for coding agents, with hooks, task checkpoints and cost stats (was Weft) | [src/waymark](src/waymark) |
+| `cairn waymark` | Local-first code index for coding agents (CLI; an MCP server comes back later), with hooks, task checkpoints and cost stats (was Weft) | [src/waymark](src/waymark) |
 | `cairn tally` | Tokens, cache, speed and cost across Claude Code, Codex, OpenCode and Antigravity, as a CLI line and a dashboard (was Token Odometer) | [src/tally](src/tally) |
 
 ```sh

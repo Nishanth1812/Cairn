@@ -1,7 +1,7 @@
 {
   "name": "cairn",
   "version": "0.1.0",
-  "description": "Cairn: Waymark (code index and MCP server for AI coding agents) and Tally (token and cost tracker) in one command.",
+  "description": "Cairn: Waymark (code index for AI coding agents) and Tally (token and cost tracker) in one command.",
   "type": "module",
   "repository": {
     "type": "git",

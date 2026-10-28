@@ -12,7 +12,7 @@ const HELP = `weft — local-first developer efficiency tools
 
 Usage: weft <command> [options]
 
-Commands: init, doctor, onboard, mcp, instructions, repos, index, search, context, task,
+Commands: init, doctor, onboard, instructions, repos, index, search, context, task,
           intent, health, portfolio, costs (stats), cache, sessions, bench,
           clean, migrate devpulse
 
@@ -33,7 +33,7 @@ function commandName(args: string[]): string {
   if (args.includes('--version')) return 'version';
   if (args.includes('--help') || args.length === 0 || args[0] === 'help') return 'help';
   const group = args.find((arg) => !arg.startsWith('--')) ?? 'help';
-  const subcommands = new Set(['instructions', 'repos', 'task', 'intent', 'migrate', 'bench', 'mcp']);
+  const subcommands = new Set(['instructions', 'repos', 'task', 'intent', 'migrate', 'bench']);
   if (subcommands.has(group)) return `${group} ${args.slice(args.indexOf(group) + 1).find((arg) => !arg.startsWith('--')) ?? ''}`.trim();
   return group === 'stats' ? 'costs' : group;
 }

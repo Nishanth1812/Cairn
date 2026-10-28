@@ -58,7 +58,7 @@ export async function runPromptHook(options: { cwd?: string; stateDir: string; p
     if (!picked.length) return '';
     let list = picked.map((hit) => hit.line).join('\n');
     while (estimateTokens(list) > MAX_TOKENS && picked.length > 1) { picked.pop(); list = picked.map((hit) => hit.line).join('\n'); }
-    const text = redactSafe(`Weft located what this request names (read by line range with mcp__weft__weft_read, or use weft_context to explore, instead of grepping or reading whole files):\n${list}`);
+    const text = redactSafe(`Weft located what this request names (Read just those line ranges with offset and limit, or run cairn waymark context "<question>", instead of grepping or reading whole files):\n${list}`);
     try { recordToolCall(db, { repoId: repo.id, tool: 'hook_prompt', returnedTokens: estimateTokens(text), baselineTokens: picked.reduce((sum, hit) => sum + Math.ceil(hit.size / 4 * 1.1), 0), ms: Date.now() - started }); } catch { /* Telemetry must not interrupt the session. */ }
     return text;
   } finally { db.close(); }
@@ -79,6 +79,6 @@ export async function runReadNudge(options: { cwd?: string; stateDir: string; fi
     if (!repoFor(db, root)) return '';
   } finally { db.close(); }
   const tokens = Math.ceil(size / 4 * 1.1);
-  const additionalContext = sweep ? 'Weft has this repo indexed: try mcp__weft__weft_search / weft_context first (ranked, token-budgeted); use Grep or Glob only for an exact string Weft missed.' : `This file is about ${Math.round(tokens / 1000)}K tokens and every later turn re-reads it from context. Prefer mcp__weft__weft_search / weft_context to find the part you need, then Read with offset and limit (or weft_read by line range).`;
+  const additionalContext = sweep ? 'Waymark has this repo indexed: run `cairn waymark search "<term>"` or `cairn waymark context "<question>"` first (ranked, token-budgeted); use Grep or Glob only for an exact string it missed.' : `This file is about ${Math.round(tokens / 1000)}K tokens and every later turn re-reads it from context. Run cairn waymark search "<term>" to find the part you need, then Read with offset and limit.`;
   return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext } });
 }
