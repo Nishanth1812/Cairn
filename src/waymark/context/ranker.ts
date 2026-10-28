@@ -13,15 +13,16 @@ export function rankCandidates(candidates: CandidateChunk[], query: string): Ran
     const pathParts = path.split(/[\/_.-]/);
     const symbolNames = (candidate.symbols ?? []).map(name => name.toLocaleLowerCase());
     const symbolMatch = queryWords.some(word => symbolNames.some(name => name === word || name.includes(word)));
+    const defScore = (candidate.defines ?? []).some(name => queryWords.includes(name.toLocaleLowerCase())) ? 1 : 0;
     const pathMatch = queryWords.some(word => pathParts.some(part => part === word || part.includes(word)));
     const pathScore = pathMatch ? 1 : 0;
     const symbolScore = symbolMatch ? 1 : 0;
     const graphScore = Math.max(0, Math.min(1, candidate.graphProximity ?? 0));
     const testPenalty = isLowValue(candidate.path) && !hasTestTerm ? 0.35 : 0;
     const intentScore = isIntent(candidate.path) && queryWords.some(word => words(candidate.safeText).includes(word)) ? 1 : 0;
-    const score = Math.max(0, 0.45 * candidate.normalizedBM25 + 0.20 * symbolScore + 0.15 * pathScore + 0.10 * graphScore + 0.10 * intentScore - testPenalty);
+    const score = Math.max(0, 0.45 * candidate.normalizedBM25 + 0.40 * defScore + 0.20 * symbolScore + 0.15 * pathScore + 0.10 * graphScore + 0.10 * intentScore - testPenalty);
     const signals: Array<[SelectionReason, number]> = [
-      ['lexical', candidate.normalizedBM25], ['symbol', symbolScore], ['path', pathScore], ['dependency', graphScore], ['intent', intentScore],
+      ['lexical', candidate.normalizedBM25], ['symbol', Math.max(symbolScore, defScore)], ['path', pathScore], ['dependency', graphScore], ['intent', intentScore],
     ];
     const selectionReason = signals.reduce((best, current) => current[1] > best[1] ? current : best)[0];
     return { ...candidate, score, selectionReason };

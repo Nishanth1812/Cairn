@@ -7,6 +7,8 @@ export interface CandidateChunk {
   safeText: string;
   normalizedBM25: number;
   symbols?: string[];
+  /** Names of symbols whose definition starts inside this chunk. */
+  defines?: string[];
   graphProximity?: number;
 }
 

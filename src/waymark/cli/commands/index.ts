@@ -29,7 +29,8 @@ import { migrate } from '../../storage/migrator.js';
 import type Database from 'better-sqlite3';
 import { checkIntegrations } from '../../integrations/doctor.js';
 import { runRetrievalBenchmark } from '../../bench/retrieval.js';
-import { indexWithinLimit } from '../../onboarding/auto.js';
+import { ensureRepoOnboarded, indexWithinLimit } from '../../onboarding/auto.js';
+import { refreshIndex } from '../../indexer/refresh.js';
 import { runVerification } from '../../verification/runner.js';
 import { suggestChecks } from '../../verification/suggest.js';
 import { recordVerification } from '../../memory/taskManager.js';
@@ -234,7 +235,8 @@ export async function runCommand(args: string[], compactOutput = false): Promise
   if (group === 'search' || group === 'context') {
     const values = positional(args.slice(1));
     if (!values.length) fail(`Usage: cairn waymark ${group} <query> [repo]`, 2);
-    const db = database(); try {
+    await mkdir(paths.state, { recursive: true }); // first use on a fresh machine needs no separate init
+    const db = database(false); try {
       let repoIndex = -1;
       for (let i = values.length - 1; i >= 0; i--) {
         if (db.prepare('SELECT 1 FROM repositories WHERE display_name = ? OR id = ?').get(values[i], values[i])) { repoIndex = i; break; }
@@ -242,10 +244,18 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       const repoArg = repoIndex < 0 ? undefined : values[repoIndex];
       const query = values.filter((_value, index) => index !== repoIndex).join(' ');
       if (!query) fail(`Usage: cairn waymark ${group} <query> [repo]`, 2);
-      const repo = repoRow(db, repoArg);
+      let repo: ReturnType<typeof repoRow>;
+      try { repo = repoRow(db, repoArg); } catch (error) {
+        // An unregistered git checkout (a new clone or worktree) is registered and indexed on first use instead of failing.
+        if (repoArg || !(await ensureRepoOnboarded(process.cwd(), { spawnIndex: false })).onboarded) throw error;
+        repo = repoRow(db, undefined);
+        const note = await indexWithinLimit(repo.root_path, (await loadConfig()).maxTrackedFiles, db, repo.id);
+        if (note) fail(note, 3);
+      }
+      await refreshIndex(db, repo.id, repo.root_path, { reindex: true });
       if (group === 'search') {
         const hits = searchChunks(db, repo.id, query, requireCount(option(args, '--limit'), '--limit', 20));
-        return { code: 0, data: compactOutput ? rankCandidates(hits, query) : hits };
+        return { code: 0, data: rankCandidates(hits, query) };
       }
       const results = rankCandidates(searchChunks(db, repo.id, query, 100), query);
       const contextHits = compactOutput ? results.filter((hit, index) => results.findIndex(other => other.path === hit.path) === index).slice(0, 2) : results;

@@ -83,15 +83,20 @@ export async function walkRepository(repoRoot: string, previous: Map<string, Pre
         files.push({ path, content: '', contentHash: cached.hash, mtimeMs: metadata.mtimeMs, sizeBytes: metadata.size, language: languageByExtension[extname(path).toLowerCase()], unchanged: true });
         continue;
       }
-      let bytes: Buffer;
-      try { bytes = await readFile(absolute); } catch { onWarning(); continue; }
-      if (bytes.includes(0)) { onWarning(); continue; }
-      const source = bytes.toString('utf8').replace(/^\uFEFF/, '');
-      if (source.includes('\uFFFD')) { onWarning(); continue; }
-      const contentHash = hashBytes(bytes);
-      files.push({ path, content: containsSecret(source) ? redactSecrets(source) : source, contentHash, mtimeMs: metadata.mtimeMs, sizeBytes: metadata.size, language: languageByExtension[extname(path).toLowerCase()] });
+      const file = await readCandidate(absolute, path, metadata);
+      if (file) files.push(file); else onWarning();
     }
   };
   await visit(root);
   return files;
+}
+
+/** Read one file through the same filters the walk applies (binary, bad encoding, secrets); null means skip it. */
+export async function readCandidate(absolute: string, path: string, metadata: { mtimeMs: number; size: number }): Promise<CandidateFile | null> {
+  let bytes: Buffer;
+  try { bytes = await readFile(absolute); } catch { return null; }
+  if (bytes.includes(0)) return null;
+  const source = bytes.toString('utf8').replace(/^\uFEFF/, '');
+  if (source.includes('\uFFFD')) return null;
+  return { path, content: containsSecret(source) ? redactSecrets(source) : source, contentHash: hashBytes(bytes), mtimeMs: metadata.mtimeMs, sizeBytes: metadata.size, language: languageByExtension[extname(path).toLowerCase()] };
 }

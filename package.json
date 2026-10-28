@@ -24,7 +24,8 @@
     "build": "tsc --noEmit && rolldown -c",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/waymark",
-    "check": "npm run lint && npm run typecheck && npm run build",
+    "test": "node --test \"tests/waymark/*.test.mjs\"",
+    "check": "npm run lint && npm run typecheck && npm run build && npm test",
     "prepublishOnly": "npm run check"
   },
   "keywords": [
