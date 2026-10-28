@@ -4,6 +4,7 @@ import { openDatabase } from '../storage/db.js';
 import { hookGitRoot, repoFor } from './claude.js';
 import { estimateTokens } from '../core/estimate/tokenEstimator.js';
 import { redactSafe } from '../core/security/redactor.js';
+import { refreshIndex } from '../indexer/refresh.js';
 import { recordToolCall } from '../telemetry/toolCalls.js';
 
 const MAX_LOCATIONS = 6;
@@ -33,6 +34,7 @@ export async function runPromptHook(options: { cwd?: string; stateDir: string; p
   try {
     const repo = repoFor(db, root);
     if (!repo) return '';
+    await refreshIndex(db, repo.id, root, { reindex: false }); // stale line numbers would mislead; a patch is a few stats
     const started = Date.now();
     const generation = (db.prepare('SELECT active_generation AS g FROM repo_index_state WHERE repo_id = ?').get(repo.id) as { g: number | null } | undefined)?.g;
     if (generation == null) return '';
