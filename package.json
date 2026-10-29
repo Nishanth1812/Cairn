@@ -1,0 +1,55 @@
+{
+  "name": "cairn",
+  "version": "0.1.0",
+  "description": "Cairn: Waymark, a code index for AI coding agents, as one command.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Nishanth1812/Cairn.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Nishanth1812/Cairn/issues"
+  },
+  "homepage": "https://github.com/Nishanth1812/Cairn#readme",
+  "bin": {
+    "cairn": "./bin/cairn.mjs"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "LICENSE"
+  ],
+  "scripts": {
+    "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc --noEmit && rolldown -c",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/waymark",
+    "test": "node --test \"tests/waymark/*.test.mjs\"",
+    "check": "npm run lint && npm run typecheck && npm run build && npm test",
+    "prepublishOnly": "npm run check"
+  },
+  "keywords": [
+    "developer-tools",
+    "ai-coding",
+    "context",
+    "indexing",
+    "local-first",
+    "telemetry",
+    "tokens"
+  ],
+  "license": "GPL-3.0-only",
+  "dependencies": {
+    "better-sqlite3": "^11.8.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.4",
+    "eslint": "^10.13.0",
+    "rolldown": "^1.2.14",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.71.2"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

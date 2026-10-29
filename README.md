@@ -1,23 +1,27 @@
 # Cairn
 
-A home for the developer tools I build and use day to day. Each tool lives in its own folder under `tools/`, has its own README, and can be used on its own or alongside the others.
+One command for the developer tools I use every day with AI coding agents.
 
-Everything here is Node and TypeScript.
-
-| Tool | What it does | Folder |
+| Command | What it does | Source |
 |---|---|---|
-| Weft | Local-first code index and MCP server for AI coding assistants, with hooks, task checkpoints and token cost stats | [tools/weft](tools/weft) |
-| Token Odometer | Local dashboard for tokens, cache, speed and cost across Claude Code, Codex, OpenCode and Antigravity | [tools/odometer](tools/odometer) |
-
-## Using a tool
-
-Clone the repo and work from the tool's folder. Each one installs and runs by itself:
+| `cairn waymark` | Local-first code index for coding agents (CLI; an MCP server comes back later), with hooks and task checkpoints (was Weft) | [src/waymark](src/waymark) |
 
 ```sh
-cd tools/weft && npm install && npm run build
-cd tools/odometer && npm start
+npm ci && npm run build
+node bin/cairn.mjs waymark context "where is auth handled"
+node bin/cairn.mjs doctor                # check the setup
 ```
 
-## Adding a tool
+`npm link` puts `cairn` on your PATH. Node 24 or newer.
 
-Add a folder under `tools/`, give it a README, and add a row to the table above.
+## Layout
+
+```
+bin/cairn.mjs   the command; runs a tool in-process
+src/waymark/    TypeScript, bundled to dist/waymark.js
+tests/          Waymark tests
+```
+
+## Licence
+
+GPL-3.0-only.
