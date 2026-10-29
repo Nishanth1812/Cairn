@@ -1,4 +1,4 @@
-export type SelectionReason = 'lexical' | 'path' | 'symbol' | 'dependency' | 'intent';
+export type SelectionReason = 'lexical' | 'path' | 'symbol' | 'intent';
 
 export interface CandidateChunk {
   path: string;
@@ -9,7 +9,6 @@ export interface CandidateChunk {
   symbols?: string[];
   /** Names of symbols whose definition starts inside this chunk. */
   defines?: string[];
-  graphProximity?: number;
 }
 
 export interface SearchResult extends CandidateChunk {}

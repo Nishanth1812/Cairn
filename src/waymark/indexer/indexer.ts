@@ -67,6 +67,8 @@ async function indexRepositoryLocked(
   if (!options.force && state?.schema_version === INDEX_SCHEMA_VERSION && activeId !== null) {
     const current = db.prepare('SELECT fingerprint FROM index_generations WHERE id = ?').get(activeId) as { fingerprint: string } | undefined;
     if (current?.fingerprint === fingerprint) {
+      // Refresh compares directory mtimes against completed_at; stamping it here stops a no-change index from looking stale forever.
+      db.prepare('UPDATE index_generations SET completed_at = ? WHERE id = ?').run(new Date().toISOString(), activeId);
       const counts = db.prepare('SELECT (SELECT COUNT(*) FROM files WHERE generation_id = ?) files, (SELECT COUNT(*) FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.generation_id = ?) symbols, (SELECT COUNT(*) FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.generation_id = ?) chunks').get(activeId, activeId, activeId) as { files: number; symbols: number; chunks: number };
       return { generationId: activeId, ...counts, reusedFiles: candidates.length, warnings };
     }

@@ -7,7 +7,7 @@ export function searchChunks(db: Database.Database, repoId: string, query: strin
   const match = terms.map(term => `"${term.replaceAll('"', '""')}"`).join(' OR ');
   const state = db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repoId) as { active_generation: number | null } | undefined;
   if (state?.active_generation == null) return [];
-  // Symbols and graph proximity are looked up only for the rows that survive the LIMIT; doing it per match cost 4-5x the search itself.
+  // Symbols are looked up only for the rows that survive the LIMIT; doing it per match cost 4-5x the search itself.
   const rows = db.prepare(`
     WITH top AS MATERIALIZED (
       SELECT f.id AS fileId, f.path, c.start_line AS startLine, c.end_line AS endLine, c.safe_text AS safeText, bm25(chunk_fts) AS rank
@@ -19,16 +19,11 @@ export function searchChunks(db: Database.Database, repoId: string, query: strin
       LIMIT ?
     )
     SELECT path, startLine, endLine, safeText, rank,
-      COALESCE((SELECT group_concat(name, char(31)) FROM symbols s WHERE s.file_id = top.fileId), '') AS symbolNames,
-      CASE WHEN EXISTS (
-        SELECT 1 FROM symbols s JOIN edges e
-          ON e.source_symbol_id = s.id OR e.target_symbol_id = s.id
-        WHERE s.file_id = top.fileId
-      ) THEN 1.0 ELSE 0.0 END AS graphProximity
+      COALESCE((SELECT group_concat(name, char(31)) FROM symbols s WHERE s.file_id = top.fileId), '') AS symbolNames
     FROM top
     ORDER BY rank ASC, path ASC, startLine ASC
   `).all(match, repoId, state.active_generation, Math.floor(limit)) as Array<{
-    path: string; startLine: number; endLine: number; safeText: string; rank: number; symbolNames: string; graphProximity: number;
+    path: string; startLine: number; endLine: number; safeText: string; rank: number; symbolNames: string;
   }>;
   const ranked = rows.map(({ rank, symbolNames, ...row }) => ({ ...row, rank, symbols: symbolNames ? symbolNames.split(String.fromCharCode(31)) : [] }));
   // Exact symbol names are looked up directly: a definition must be a candidate even when plain text matching ranks it below the limit.
@@ -42,7 +37,7 @@ export function searchChunks(db: Database.Database, repoId: string, query: strin
   const byKey = new Map(ranked.map((row) => [`${row.path}:${row.startLine}`, row as typeof row & { defines?: string[] }]));
   for (const hit of defined) {
     const key = `${hit.path}:${hit.startLine}`;
-    const row = byKey.get(key) ?? { path: hit.path, startLine: hit.startLine, endLine: hit.endLine, safeText: hit.safeText, rank: 0, symbols: [hit.name], graphProximity: 0 } as (typeof ranked)[number] & { defines?: string[] };
+    const row = byKey.get(key) ?? { path: hit.path, startLine: hit.startLine, endLine: hit.endLine, safeText: hit.safeText, rank: 0, symbols: [hit.name] } as (typeof ranked)[number] & { defines?: string[] };
     (row.defines ??= []).push(hit.name);
     if (!byKey.has(key)) { byKey.set(key, row); ranked.push(row); }
   }

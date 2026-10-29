@@ -1,7 +1,8 @@
 // Black-box test of `search`: runs the built CLI against a throwaway git repo and an isolated state directory.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import Database from 'better-sqlite3';
+import { mkdirSync, mkdtempSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -13,6 +14,11 @@ const repo = mkdtempSync(join(base, 'repo-'));
 const home = mkdtempSync(join(tmpdir(), 'waymark-home-'));
 const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'r'), LOCALAPPDATA: join(home, 'l'), XDG_CONFIG_HOME: join(home, 'c'), XDG_STATE_HOME: join(home, 's'), XDG_CACHE_HOME: join(home, 'k') };
 const search = (query) => JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'search', query, '--json'], { cwd: repo, env, encoding: 'utf8' })).data.map((hit) => hit.path);
+// Windows state layout (config/paths.ts) under the isolated LOCALAPPDATA.
+const builtAt = () => {
+  const db = new Database(join(home, 'l', 'weft', 'state', 'weft.db'), { readonly: true, fileMustExist: true });
+  try { return Date.parse(db.prepare('SELECT g.completed_at AS at FROM repo_index_state s JOIN index_generations g ON g.id = s.active_generation').get().at); } finally { db.close(); }
+};
 
 before(() => {
   mkdirSync(join(repo, '.git'));
@@ -39,4 +45,12 @@ test('a new file is searchable immediately', () => {
 test('a deleted file stops matching', () => {
   unlinkSync(join(repo, 'src', 'extra.js'));
   assert.deepEqual(search('zzNewFileProbe'), []);
+});
+
+test('a search after a directory change with no content change re-stamps the index build time', () => {
+  // The directory mtime moves but no file changed: the search must find the index still current and record that.
+  mkdirSync(join(repo, 'src', 'probe'));
+  rmdirSync(join(repo, 'src', 'probe'));
+  search('computeInvoiceTotal');
+  assert.ok(builtAt() >= Math.floor(statSync(join(repo, 'src')).mtimeMs));
 });

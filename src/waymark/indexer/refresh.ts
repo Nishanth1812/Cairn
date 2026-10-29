@@ -35,6 +35,7 @@ export async function refreshIndex(db: Database.Database, repoId: string, root: 
   }));
 
   let structural = false;
+  // shortcut: any create/delete/rename in an indexed directory forces one full rebuild (a process that makes a directory per run rebuilds per run), upgrade to comparing directory listings.
   if (options.reindex) {
     const directories = [...new Set(rows.map((row) => dirname(row.path)))];
     await Promise.all(directories.map(async (directory) => {
