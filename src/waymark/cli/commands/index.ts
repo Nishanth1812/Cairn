@@ -23,6 +23,9 @@ import { runHookCommand } from '../hookCommand.js';
 import { syncCodexInstructions, CODEX_GUIDELINES } from '../../integrations/codex/index.js';
 import { checkInstructions } from '../../integrations/instructions.js';
 import { getStats } from '../../telemetry/stats.js';
+import { recordToolCall } from '../../telemetry/toolCalls.js';
+import { redactSafe } from '../../core/security/redactor.js';
+import { estimateTokens } from '../../core/estimate/tokenEstimator.js';
 import { migrateDevPulse } from '../../migration/devpulse/migrator.js';
 import { openDatabase, repairCorruptDatabase } from '../../storage/db.js';
 import { migrate } from '../../storage/migrator.js';
@@ -57,7 +60,7 @@ function option(args: string[], name: string, fallback?: string): string | undef
 }
 function positional(args: string[]): string[] {
   const values: string[] = [];
-  const valued = new Set(['--name', '--limit', '--budget', '--scope', '--since', '--source']);
+  const valued = new Set(['--name', '--limit', '--budget', '--scope', '--since', '--source', '--kind', '--query', '--session', '--repo']);
   for (let i = 0; i < args.length; i++) {
     if (valued.has(args[i]!)) { i++; continue; }
     if (!args[i]!.startsWith('--')) values.push(args[i]!);
@@ -70,8 +73,15 @@ function requireCount(value: string | undefined, label: string, fallback: number
   if (!Number.isSafeInteger(number) || number < 1) fail(`${label} must be a positive integer`, 2);
   return number;
 }
+// The enclosing git checkout, so a command run from a subfolder finds its repo; falls back to the folder itself.
+function gitRootOf(dir: string): string {
+  for (let current = resolve(dir); ; current = resolve(current, '..')) {
+    if (existsSync(join(current, '.git'))) return current;
+    if (resolve(current, '..') === current) return resolve(dir);
+  }
+}
 function repoRow(db: Database.Database, query?: string): { id: string; root_path: string; display_name: string } {
-  const root = process.cwd();
+  const root = gitRootOf(process.cwd());
   const rows = db.prepare('SELECT id, root_path, display_name FROM repositories ORDER BY display_name').all() as Array<{ id: string; root_path: string; display_name: string }>;
   const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
   const same = (a: string, b: string) => norm(a) === norm(b);
@@ -253,13 +263,21 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         if (note) fail(note, 3);
       }
       await refreshIndex(db, repo.id, repo.root_path, { reindex: true });
+      // Records the call for adoption, with the tokens the agent actually received.
+      // Same key format the PreToolUse hook uses ("<session_id>-<agent_id>"); the agent id is not in the env, so subagents count under their session.
+      const sessionId = process.env.CLAUDE_CODE_SESSION_ID;
+      const session = sessionId ? `${sessionId}-` : null;
+      const respond = (data: unknown): Result => {
+        try { recordToolCall(db, { repoId: repo.id, tool: group, session, returnedTokens: estimateTokens(JSON.stringify(data)), ms: null, query: redactSafe(query) }); } catch { /* Telemetry must not interrupt the session. */ }
+        return { code: 0, data };
+      };
       if (group === 'search') {
         const hits = searchChunks(db, repo.id, query, requireCount(option(args, '--limit'), '--limit', 20));
-        return { code: 0, data: rankCandidates(hits, query) };
+        return respond(rankCandidates(hits, query));
       }
       const results = rankCandidates(searchChunks(db, repo.id, query, 100), query);
       const contextHits = compactOutput ? results.filter((hit, index) => results.findIndex(other => other.path === hit.path) === index).slice(0, 2) : results;
-      return { code: 0, data: packContext(contextHits, requireCount(option(args, '--budget'), '--budget', 1500), query) };
+      return respond(packContext(contextHits, requireCount(option(args, '--budget'), '--budget', 1500), query));
     } finally { db.close(); }
   }
   if (group === 'task') {
@@ -294,12 +312,32 @@ export async function runCommand(args: string[], compactOutput = false): Promise
   }
   if (group === 'health') { const db = database(); try { const repo = repoRow(db, positional(args.slice(1))[0]); const data = await checkRepoHealth(repo.root_path); return { code: findings(data) ? 4 : 0, data, warnings: findings(data) ? ['Health findings were reported.'] : [] }; } finally { db.close(); } }
   if (group === 'portfolio') { const db = database(); try { const repos = allRepos(db).map((repo) => ({ name: repo.name, rootPath: repo.rootPath, registeredAt: repo.registeredAt })); const data = await generatePortfolioSummary(repos); return { code: findings(data.totals) ? 4 : 0, data }; } finally { db.close(); } }
+  if (group === 'feedback') {
+    // The gate reads these rows: an agent that filed verified feedback may run more lookups.
+    const note = positional(args.slice(1)).join(' ').trim(), kind = option(args, '--kind'), query = option(args, '--query'), session = option(args, '--session');
+    if (!note || !['miss', 'bad_output', 'error'].includes(kind ?? '') || !query) fail('Usage: cairn waymark feedback "<what went wrong>" --kind miss|bad_output|error --query "<the cairn waymark search you ran>" [--session <key>] [--repo <name>]', 2);
+    if (note.length < 20 || note.split(/\s+/).length < 4) fail('Feedback needs what went wrong in at least four words and 20 characters, e.g. the query and what came back.', 2); // the gate trusts feedback, so a one-word note must not unlock it
+    const db = database(); try {
+      // Feedback must answer a lookup this Claude session really ran through Waymark, so a made-up query cannot unlock the gate. Session keys are "<session id>-<agent id>"; lookups record "<session id>-".
+      // Without a session key (Codex has none) the search must have run in the last hour.
+      const ran = session
+        ? db.prepare("SELECT 1 FROM tool_calls WHERE tool IN ('search', 'context') AND query = ? AND session = ? LIMIT 1").get(redactSafe(query), `${session.replace(/-[^-]*$/, '')}-`)
+        : db.prepare("SELECT 1 FROM tool_calls WHERE tool IN ('search', 'context') AND query = ? AND observed_at >= ? LIMIT 1").get(redactSafe(query), new Date(Date.now() - 60 * 60 * 1000).toISOString());
+      if (!ran) fail('No Waymark search or context with that query ran in this session. Run cairn waymark search "<query>" first, then file the feedback with the same --query.', 3);
+      let repoId: string | null = null;
+      try { repoId = repoRow(db, option(args, '--repo')).id; } catch { /* Feedback is kept even when the repo is not registered. */ }
+      const row = db.prepare('INSERT INTO lookup_feedback (repo_id, session, kind, query, note, observed_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(repoId, session ?? null, kind, query === undefined ? null : redactSafe(query), redactSafe(note), new Date().toISOString());
+      return { code: 0, data: { recorded: Number(row.lastInsertRowid), kind } };
+    } finally { db.close(); }
+  }
   if (group === 'stats') {
     const db = database(); try {
       const stats = getStats(db, duration(option(args, '--since')));
       return { code: 0, data: compactOutput
-        ? `Returned tokens: ${stats.toolTokens.returned} (baseline ${stats.toolTokens.baseline})
-Prompt hook: ${stats.promptHook.injections} injections, ${stats.promptHook.returned} tokens (pointing at ${stats.promptHook.baseline} tokens of files)`
+        ? `Adoption: ${stats.adoption.percent == null ? 'no lookups yet' : `${stats.adoption.percent}%`} of lookups through Waymark (${stats.adoption.weftCalls} search/context, ${stats.adoption.nativeCalls} Read/Grep/Glob)
+Waymark returned: ${stats.toolTokens.returned} tokens
+Prompt hook: ${stats.promptHook.injections} injections, ${stats.promptHook.returned} tokens`
         : stats };
     } finally { db.close(); }
   }
@@ -346,7 +384,7 @@ Prompt hook: ${stats.promptHook.injections} injections, ${stats.promptHook.retur
   fail(`Unknown command: ${group ?? ''}`, 2);
 }
 
-const VALUE_FLAGS = new Set(['--name', '--limit', '--budget', '--scope', '--since', '--source', '--suite', '--harness', '--repo', '--tasks', '--repeat', '--task']);
+const VALUE_FLAGS = new Set(['--name', '--limit', '--budget', '--scope', '--since', '--source', '--suite', '--harness', '--repo', '--tasks', '--repeat', '--task', '--kind', '--query', '--session']);
 export const KNOWN_FLAGS = new Set([...VALUE_FLAGS, '--force', '--repair', '--dry-run', '--keep-data', '--interactive', '--yes', '--global', '--suggest', '--uninstall', '--portable']);
 
 function validateFlags(args: string[]): void {

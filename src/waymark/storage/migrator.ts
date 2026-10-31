@@ -98,7 +98,25 @@ CREATE TABLE session_tool_calls (session_id TEXT NOT NULL REFERENCES sessions(id
 const v3 = `
 CREATE INDEX idx_symbols_file ON symbols(file_id);
 `;
-const migrations = [{ version: 1, sql: v1 }, { version: 2, sql: v2 }, { version: 3, sql: v3 }];
+// Baseline tokens were an estimate of what a shell search would have cost; adoption now counts real calls, so the column goes.
+const v4 = `
+ALTER TABLE tool_calls DROP COLUMN baseline_tokens;
+`;
+// Per-agent call counts drive the sweep gate; feedback is how an agent reports a Waymark miss or bad output.
+const v5 = `
+ALTER TABLE tool_calls ADD COLUMN session TEXT;
+CREATE INDEX idx_tool_calls_session ON tool_calls(session, tool);
+CREATE TABLE lookup_feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id TEXT REFERENCES repositories(id) ON DELETE SET NULL,
+  session TEXT, kind TEXT NOT NULL CHECK(kind IN ('miss', 'bad_output', 'error')), query TEXT, note TEXT NOT NULL, observed_at TEXT NOT NULL
+);
+CREATE INDEX idx_lookup_feedback_session ON lookup_feedback(session);
+`;
+// The query behind each Waymark lookup, so feedback can be checked against a search that actually ran.
+const v6 = `
+ALTER TABLE tool_calls ADD COLUMN query TEXT;
+`;
+const migrations = [{ version: 1, sql: v1 }, { version: 2, sql: v2 }, { version: 3, sql: v3 }, { version: 4, sql: v4 }, { version: 5, sql: v5 }, { version: 6, sql: v6 }];
 const checksum = (sql: string) => createHash('sha256').update(sql).digest('hex');
 
 export function migrate(db: Database.Database, now: () => string = () => new Date().toISOString()): number[] {
