@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { stateDbPath } from './stateDb.mjs';
 import { after, before, test } from 'node:test';
 
 const BIN = resolve('dist/waymark.js');
@@ -16,7 +17,7 @@ const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home,
 delete env.CLAUDE_CODE_SESSION_ID; // a live session's id would leak into the CLI's lookup records
 const cli = (...args) => JSON.parse(execFileSync('node', ['--no-warnings', BIN, ...args, '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
 const cliAs = (sessionId, ...args) => JSON.parse(execFileSync('node', ['--no-warnings', BIN, ...args, '--json'], { cwd: repo, env: { ...env, CLAUDE_CODE_SESSION_ID: sessionId }, encoding: 'utf8' })).data;
-const dbPath = () => join(env.LOCALAPPDATA, 'weft', 'state', 'weft.db');
+const dbPath = () => stateDbPath(home);
 // The PreToolUse hook gets the tool event on stdin, as Claude Code sends it. Returns the decision, or null when the call is allowed silently.
 const hook = (event) => {
   const out = execFileSync('node', ['--no-warnings', BIN, 'hook', 'pre-tool-use'], { cwd: event.cwd, env, input: JSON.stringify(event), encoding: 'utf8' });

@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { stateDbPath } from './stateDb.mjs';
 import { after, before, test } from 'node:test';
 
 const BIN = resolve('dist/waymark.js');
@@ -14,7 +15,7 @@ const repo = mkdtempSync(join(base, 'repo-'));
 const home = mkdtempSync(join(tmpdir(), 'waymark-home-'));
 const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'r'), LOCALAPPDATA: join(home, 'l'), XDG_CONFIG_HOME: join(home, 'c'), XDG_STATE_HOME: join(home, 's'), XDG_CACHE_HOME: join(home, 'k') };
 const cli = (...args) => execFileSync('node', ['--no-warnings', BIN, ...args, '--json'], { cwd: repo, env: { ...env, CLAUDE_CODE_SESSION_ID: 'lookup-test' }, encoding: 'utf8' });
-const dbPath = () => join(env.LOCALAPPDATA, 'weft', 'state', 'weft.db');
+const dbPath = () => stateDbPath(home);
 
 before(() => {
   mkdirSync(join(repo, '.git'));

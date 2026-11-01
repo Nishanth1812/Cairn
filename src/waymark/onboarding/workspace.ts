@@ -24,8 +24,9 @@ export function findChildGitRepos(dir: string, depth = 2): string[] {
 export async function onboardWorkspace(db: Database.Database, dir: string, options: { spawnIndex?: boolean } = {}): Promise<WorkspaceRepo[]> {
   const found: WorkspaceRepo[] = [];
   for (const child of findChildGitRepos(dir).slice(0, 12)) {
-    await ensureRepoOnboarded(child, { spawnIndex: options.spawnIndex });
-    const row = db.prepare('SELECT id, root_path AS rootPath, display_name AS name FROM repositories WHERE lower(root_path) = lower(?)').get(child.replace(/\\/g, '/')) as WorkspaceRepo | undefined;
+    // The registered row is found by the id onboarding returns: its root_path is the canonical path, which can differ from `child` (symlinks, 8.3 short names).
+    const onboarded = await ensureRepoOnboarded(child, { spawnIndex: options.spawnIndex });
+    const row = 'id' in onboarded ? db.prepare('SELECT id, root_path AS rootPath, display_name AS name FROM repositories WHERE id = ?').get(onboarded.id) as WorkspaceRepo | undefined : undefined;
     if (row) found.push(row);
   }
   return found;

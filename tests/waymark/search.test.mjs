@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, mkdtempSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { stateDbPath } from './stateDb.mjs';
 import { after, before, test } from 'node:test';
 
 const BIN = resolve('dist/waymark.js');
@@ -16,7 +17,7 @@ const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home,
 const search = (query) => JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'search', query, '--json'], { cwd: repo, env, encoding: 'utf8' })).data.map((hit) => hit.path);
 // Windows state layout (config/paths.ts) under the isolated LOCALAPPDATA.
 const builtAt = () => {
-  const db = new Database(join(home, 'l', 'weft', 'state', 'weft.db'), { readonly: true, fileMustExist: true });
+  const db = new Database(stateDbPath(home), { readonly: true, fileMustExist: true });
   try { return Date.parse(db.prepare('SELECT g.completed_at AS at FROM repo_index_state s JOIN index_generations g ON g.id = s.active_generation').get().at); } finally { db.close(); }
 };
 

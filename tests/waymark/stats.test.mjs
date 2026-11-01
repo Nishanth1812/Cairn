@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { stateDbPath } from './stateDb.mjs';
 import { after, before, test } from 'node:test';
 
 const BIN = resolve('dist/waymark.js');
@@ -32,7 +33,7 @@ test('a fresh state has no lookups and no adoption', () => {
 
 test('the baseline column is gone from the tool_calls table', () => {
   cli('search', 'computeInvoiceTotal');
-  const db = new Database(join(home, 'l', 'weft', 'state', 'weft.db'), { readonly: true, fileMustExist: true });
+  const db = new Database(stateDbPath(home), { readonly: true, fileMustExist: true });
   try { assert.equal(db.prepare('PRAGMA table_info(tool_calls)').all().some((column) => column.name === 'baseline_tokens'), false); } finally { db.close(); }
 });
 
