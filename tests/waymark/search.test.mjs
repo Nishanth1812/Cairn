@@ -60,3 +60,9 @@ test('words inside a camelCase name match, and so do their stems', () => {
   assert.ok(search('invoice').includes('src/billing.js'));
   assert.ok(search('computing totals').includes('src/billing.js'));
 });
+
+test('a small --budget cuts the list and says how many were left out', () => {
+  const text = execFileSync('node', ['--no-warnings', BIN, 'search', '--exact', 'computeInvoiceTotal', '--budget', '10'], { cwd: repo, env, encoding: 'utf8' });
+  assert.match(text, /\.\.\. \d+ more matches \(raise --limit or --budget\)/);
+  assert.equal(text.split('\n').filter((line) => line.startsWith('src/')).length, 1);
+});

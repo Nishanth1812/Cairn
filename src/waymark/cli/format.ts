@@ -32,12 +32,12 @@ export function formatContext(items: Location[]): string {
 /** `total` can exceed matches.length when --limit cut the list; say so, so an audit is never silently partial. */
 export function formatExact(matches: ExactMatch[], total: number): string {
   const lines = matches.map(match => `${match.path}:${match.line}  ${match.text}`);
-  if (total > matches.length) lines.push(`... ${total - matches.length} more matches (raise --limit)`);
+  if (total > matches.length) lines.push(`... ${total - matches.length} more matches (raise --limit or --budget)`);
   return lines.join('\n');
 }
 
 export function formatSymbols(hits: SymbolHit[], total: number): string {
   const lines = hits.map(hit => `${hit.path}:${hit.startLine}-${hit.endLine}  ${hit.name} (${hit.kind})`);
-  if (total > hits.length) lines.push(`... ${total - hits.length} more (raise --limit)`);
+  if (total > hits.length) lines.push(`... ${total - hits.length} more (raise --limit or --budget)`);
   return lines.join('\n');
 }

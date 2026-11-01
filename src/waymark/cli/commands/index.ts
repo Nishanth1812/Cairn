@@ -292,9 +292,12 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         return { code: 0, data };
       };
       const limit = requireCount(option(args, '--limit'), '--limit', 20);
+      const budget = requireCount(option(args, '--budget'), '--budget', 1500);
+      // Every lookup mode stops at the token budget, so a broad query cannot return tens of thousands of tokens; the first item always fits.
+      const fit = <T>(items: T[], text: (item: T) => string): T[] => { let used = 0; const kept: T[] = []; for (const item of items) { used += estimateTokens(text(item)); if (kept.length && used > budget) break; kept.push(item); } return kept; };
       const rankedHits = (count: number) => repos.flatMap((repo) => rankCandidates(searchChunks(db, repo.id, query, count), query).map((hit) => prefixed(repo, hit))).sort((a, b) => b.score - a.score);
       if (group === 'search' && args.includes('--exact')) {
-        const all = repos.flatMap((repo) => exactMatches(db, repo.id, query).map((match) => prefixed(repo, match))), shownMatches = all.slice(0, requireCount(option(args, '--limit'), '--limit', 100));
+        const all = repos.flatMap((repo) => exactMatches(db, repo.id, query).map((match) => prefixed(repo, match))), shownMatches = fit(all.slice(0, requireCount(option(args, '--limit'), '--limit', 100)), (match) => formatExact([match], 1));
         return respond(compactOutput ? formatExact(shownMatches, all.length) : shownMatches, formatExact(shownMatches, all.length), shownMatches);
       }
       const kind = group === 'search' ? option(args, '--kind') : undefined;
@@ -302,16 +305,16 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         if (!SYMBOL_KINDS.includes(kind)) fail(`--kind for search must be one of ${SYMBOL_KINDS.join(', ')}`, 2);
         // The query's words narrow the list to matching names or paths; `*` lists every symbol of the kind.
         const terms = query === '*' ? [] : (query.match(/[\p{L}\p{N}_]+/gu) ?? []);
-        const all = repos.flatMap((repo) => symbolsByKind(db, repo.id, kind, terms).map((hit) => prefixed(repo, hit))), shownHits = all.slice(0, requireCount(option(args, '--limit'), '--limit', 100));
+        const all = repos.flatMap((repo) => symbolsByKind(db, repo.id, kind, terms).map((hit) => prefixed(repo, hit))), shownHits = fit(all.slice(0, requireCount(option(args, '--limit'), '--limit', 100)), (hit) => formatSymbols([hit], 1));
         return respond(compactOutput ? formatSymbols(shownHits, all.length) : shownHits, formatSymbols(shownHits, all.length), shownHits);
       }
       if (group === 'search') {
-        const hits = rankedHits(limit).slice(0, limit);
+        const hits = fit(rankedHits(limit).slice(0, limit), (hit) => formatSearch([hit], query));
         return respond(compactOutput ? formatSearch(hits, query) : hits.map((hit) => searchRecord(hit, query)), formatSearch(hits, query), hits);
       }
       const results = rankedHits(100);
       const contextHits = compactOutput ? results.filter((hit, index) => results.findIndex(other => other.path === hit.path) === index).slice(0, 2) : results;
-      const packed = packContext(contextHits, requireCount(option(args, '--budget'), '--budget', 1500), query);
+      const packed = packContext(contextHits, budget, query);
       return respond(packed, formatContext(packed.items), packed.items);
     } finally { db.close(); }
   }
