@@ -53,7 +53,7 @@ try {
   }));
   process.stdout.write(`${after.join('\n')}\n`);
   if (after.some((line) => !line.endsWith('Weft entries removed'))) throw new Error('Uninstall left Weft integration entries behind');
-  const sqlite = run(process.execPath, ['-e', "require('better-sqlite3')(':memory:').close(); console.log('better-sqlite3 loaded')"], { cwd: join(prefix, 'node_modules', 'cairn') });
+  const sqlite = run(process.execPath, ['-e', "require('better-sqlite3')(':memory:').close(); console.log('better-sqlite3 loaded')"], { cwd: join(prefix, 'node_modules', '@nishanth1812', 'cairn') });
   if (!sqlite.includes('better-sqlite3 loaded')) throw new Error('better-sqlite3 did not load');
 } finally {
   await rm(temp, { recursive: true, force: true });

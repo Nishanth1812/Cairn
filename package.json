@@ -1,5 +1,5 @@
 {
-  "name": "cairn",
+  "name": "@nishanth1812/cairn",
   "version": "0.1.0",
   "description": "Cairn: Waymark, a code index for AI coding agents, as one command.",
   "type": "module",
@@ -13,6 +13,9 @@
   "homepage": "https://github.com/Nishanth1812/Cairn#readme",
   "bin": {
     "cairn": "./bin/cairn.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "bin",
