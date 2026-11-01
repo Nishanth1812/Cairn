@@ -92,7 +92,7 @@ function repoRow(db: Database.Database, query?: string): { id: string; root_path
     : rows.find((row) => same(row.root_path, root));
   if (match) return match;
   if (!query && !rows.length) fail('No repositories are registered. Run `cairn waymark repos register` first.', 3);
-  if (!query) fail(`Current directory is not registered: ${root}`, 3);
+  if (!query) fail(`Current directory is not registered: ${root}. Run from inside a git repo (it is indexed on first use), from a folder that holds git repos to search them all, or register it with \`cairn waymark repos register\`.`, 3);
   fail(`Repository not found: ${query}`, 3);
 }
 function allRepos(db: Database.Database) {
