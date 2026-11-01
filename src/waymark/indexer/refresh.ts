@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { indexRepository, storeFile } from './indexer.js';
+import { INDEX_SCHEMA_VERSION, indexRepository, storeFile } from './indexer.js';
 import { readCandidate } from './walker.js';
 
 const PATCH_LIMIT = 200;
@@ -15,8 +15,10 @@ export type Refresh = 'fresh' | 'patched' | 'reindexed' | 'none';
  * shortcut: new files are detected through directory mtimes, so a file created without touching its directory is missed until the next index.
  */
 export async function refreshIndex(db: Database.Database, repoId: string, root: string, options: { reindex: boolean }): Promise<Refresh> {
-  const state = db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repoId) as { active_generation: number | null } | undefined;
+  const state = db.prepare('SELECT active_generation, schema_version FROM repo_index_state WHERE repo_id = ?').get(repoId) as { active_generation: number | null; schema_version: number } | undefined;
   const generation = state?.active_generation;
+  // Built by an older extractor: rebuild, or a new kind of symbol stays invisible until its file happens to change.
+  if (generation != null && options.reindex && state?.schema_version !== INDEX_SCHEMA_VERSION) { await indexRepository(db, repoId, root); return 'reindexed'; }
   if (generation == null) {
     if (!options.reindex) return 'none';
     await indexRepository(db, repoId, root);

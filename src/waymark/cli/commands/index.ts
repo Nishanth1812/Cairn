@@ -34,7 +34,8 @@ import { checkIntegrations } from '../../integrations/doctor.js';
 import { runRetrievalBenchmark } from '../../bench/retrieval.js';
 import { ensureRepoOnboarded, indexWithinLimit } from '../../onboarding/auto.js';
 import { refreshIndex } from '../../indexer/refresh.js';
-import { formatContext, formatSearch } from '../format.js';
+import { formatContext, formatExact, formatSearch, formatSymbols } from '../format.js';
+import { exactMatches, SYMBOL_KINDS, symbolsByKind } from '../../context/lookup.js';
 import { onboardWorkspace } from '../../onboarding/workspace.js';
 import { runVerification } from '../../verification/runner.js';
 import { suggestChecks } from '../../verification/suggest.js';
@@ -256,41 +257,59 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       const repoArg = repoIndex < 0 ? undefined : values[repoIndex];
       const query = values.filter((_value, index) => index !== repoIndex).join(' ');
       if (!query) fail(`Usage: cairn waymark ${group} <query> [repo]`, 2);
-      let repo: ReturnType<typeof repoRow>;
-      try { repo = repoRow(db, repoArg); } catch (error) {
+      let repos: Array<ReturnType<typeof repoRow>>;
+      try { repos = [repoRow(db, repoArg)]; } catch (error) {
         // An unregistered git checkout (a new clone or worktree) is registered and indexed on first use instead of failing.
         if (repoArg) throw error;
         const onboarding = await ensureRepoOnboarded(process.cwd(), { spawnIndex: false });
-        // A plain folder that holds repos (a workspace): use its only repo, or list them so the agent can name one.
-        let childId: string | undefined;
         if ('reason' in onboarding && onboarding.reason === 'not-git') {
-          const children = await onboardWorkspace(db, process.cwd(), { spawnIndex: false });
-          if (children.length > 1) {
-            await onboardWorkspace(db, process.cwd()); // index them in the background so the retry is ready
-            fail(`${process.cwd()} holds ${children.length} repos: ${children.map((child) => child.name).join(', ')}. Run again with one as the last argument, e.g. cairn waymark ${group} "${query}" ${children[0]!.name}`, 3);
-          }
-          childId = children[0]?.id;
+          // A plain folder that holds repos (a workspace) is searched across all of them.
+          repos = (await onboardWorkspace(db, process.cwd(), { spawnIndex: false })).map((child) => repoRow(db, child.id));
+          if (!repos.length) throw error;
+        } else {
+          if (!onboarding.onboarded) throw error;
+          repos = [repoRow(db, undefined)];
         }
-        if (!onboarding.onboarded && !childId) throw error;
-        repo = repoRow(db, childId);
-        const note = await indexWithinLimit(repo.root_path, (await loadConfig()).maxTrackedFiles, db, repo.id);
-        if (note) fail(note, 3);
+        const maxTrackedFiles = (await loadConfig()).maxTrackedFiles, usable: typeof repos = [], notes: string[] = [];
+        for (const candidate of repos) {
+          const indexed = db.prepare('SELECT active_generation AS generation FROM repo_index_state WHERE repo_id = ?').get(candidate.id) as { generation: number | null } | undefined;
+          const note = indexed?.generation == null ? await indexWithinLimit(candidate.root_path, maxTrackedFiles, db, candidate.id) : null;
+          if (note) notes.push(`${candidate.display_name}: ${note}`); else usable.push(candidate);
+        }
+        if (!usable.length) fail(notes.join(' '), 3);
+        repos = usable;
       }
-      await refreshIndex(db, repo.id, repo.root_path, { reindex: true });
+      for (const repo of repos) await refreshIndex(db, repo.id, repo.root_path, { reindex: true });
+      const multi = repos.length > 1; // a workspace: results carry the repo name as a path prefix
+      const prefixed = <T extends { path: string }>(repo: (typeof repos)[number], item: T): T => multi ? { ...item, path: `${repo.display_name}/${item.path}` } : item;
       // Records the call for adoption, with the tokens the agent actually received.
       // Same key format the PreToolUse hook uses ("<session_id>-<agent_id>"); the agent id is not in the env, so subagents count under their session.
       const sessionId = process.env.CLAUDE_CODE_SESSION_ID;
       const session = sessionId ? `${sessionId}-` : null;
       // `shown` is the text the CLI prints (formatSearch/formatContext), not the full JSON payload, which is ~10x larger for search.
       const respond = <T>(data: T, shown: string): Result => {
-        try { recordToolCall(db, { repoId: repo.id, tool: group, session, returnedTokens: estimateTokens(shown), ms: null, query: redactSafe(query) }); } catch { /* Telemetry must not interrupt the session. */ }
+        try { recordToolCall(db, { repoId: multi ? null : repos[0]!.id, tool: group, session, returnedTokens: estimateTokens(shown), ms: null, query: redactSafe(query) }); } catch { /* Telemetry must not interrupt the session. */ }
         return { code: 0, data };
       };
-      if (group === 'search') {
-        const hits = rankCandidates(searchChunks(db, repo.id, query, requireCount(option(args, '--limit'), '--limit', 20)), query);
-        return respond(hits, formatSearch(hits));
+      const limit = requireCount(option(args, '--limit'), '--limit', 20);
+      const rankedHits = (count: number) => repos.flatMap((repo) => rankCandidates(searchChunks(db, repo.id, query, count), query).map((hit) => prefixed(repo, hit))).sort((a, b) => b.score - a.score);
+      if (group === 'search' && args.includes('--exact')) {
+        const all = repos.flatMap((repo) => exactMatches(db, repo.id, query).map((match) => prefixed(repo, match))), shownMatches = all.slice(0, requireCount(option(args, '--limit'), '--limit', 100));
+        return respond(compactOutput ? formatExact(shownMatches, all.length) : shownMatches, formatExact(shownMatches, all.length));
       }
-      const results = rankCandidates(searchChunks(db, repo.id, query, 100), query);
+      const kind = group === 'search' ? option(args, '--kind') : undefined;
+      if (kind) {
+        if (!SYMBOL_KINDS.includes(kind)) fail(`--kind for search must be one of ${SYMBOL_KINDS.join(', ')}`, 2);
+        // The query's words narrow the list to matching names or paths; `*` lists every symbol of the kind.
+        const terms = query === '*' ? [] : (query.match(/[\p{L}\p{N}_]+/gu) ?? []);
+        const all = repos.flatMap((repo) => symbolsByKind(db, repo.id, kind, terms).map((hit) => prefixed(repo, hit))), shownHits = all.slice(0, requireCount(option(args, '--limit'), '--limit', 100));
+        return respond(compactOutput ? formatSymbols(shownHits, all.length) : shownHits, formatSymbols(shownHits, all.length));
+      }
+      if (group === 'search') {
+        const hits = rankedHits(limit).slice(0, limit);
+        return respond(compactOutput ? formatSearch(hits, query) : hits, formatSearch(hits, query));
+      }
+      const results = rankedHits(100);
       const contextHits = compactOutput ? results.filter((hit, index) => results.findIndex(other => other.path === hit.path) === index).slice(0, 2) : results;
       const packed = packContext(contextHits, requireCount(option(args, '--budget'), '--budget', 1500), query);
       return respond(packed, formatContext(packed.items));
@@ -402,7 +421,7 @@ Fell back to a sweep after a lookup: ${stats.quality.fallbackPercent == null ? '
 }
 
 const VALUE_FLAGS = new Set(['--name', '--limit', '--budget', '--scope', '--since', '--source', '--suite', '--harness', '--repo', '--tasks', '--repeat', '--task', '--kind', '--query', '--session']);
-export const KNOWN_FLAGS = new Set([...VALUE_FLAGS, '--force', '--repair', '--dry-run', '--keep-data', '--interactive', '--yes', '--global', '--suggest', '--uninstall', '--portable']);
+export const KNOWN_FLAGS = new Set([...VALUE_FLAGS, '--force', '--repair', '--dry-run', '--keep-data', '--interactive', '--yes', '--global', '--suggest', '--uninstall', '--portable', '--exact']);
 
 function validateFlags(args: string[]): void {
   const valueFlags = VALUE_FLAGS;

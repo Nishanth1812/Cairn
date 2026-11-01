@@ -12,7 +12,8 @@ export interface IndexSummary {
   generationId: number; files: number; symbols: number; chunks: number; reusedFiles: number; warnings: number;
 }
 
-const INDEX_SCHEMA_VERSION = 2;
+// Bump when what is stored per file changes (symbol rules, chunking): refreshIndex then rebuilds every repo on its next lookup.
+export const INDEX_SCHEMA_VERSION = 3;
 
 export async function indexRepository(
   db: Database.Database, repoId: string, repoRoot: string, options: { force?: boolean } = {},

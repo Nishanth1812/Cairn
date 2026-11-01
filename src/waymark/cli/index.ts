@@ -2,7 +2,7 @@
 import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { formatContext, formatSearch } from './format.js';
+import { formatContext } from './format.js';
 import { redactDeep, redactSafe } from '../core/security/redactor.js';
 
 export interface CliIo { stdout: (text: string) => void; stderr: (text: string) => void }
@@ -15,6 +15,10 @@ Usage: cairn waymark <command> [options]
 Commands: init, doctor, onboard, instructions, repos, index, search, context, task,
           intent, health, portfolio, stats, bench,
           clean, migrate devpulse
+
+Search: cairn waymark search "<words>" [repo] ranks code by relevance.
+  --exact lists every line containing the text (file:line); --kind function|class|interface|type|method|variable lists definitions (use * for all);
+  --limit N caps the list. Run from a folder of repos to search all of them.
 
 Global flags: --json --quiet --verbose --help --version`;
 
@@ -63,7 +67,6 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = { stdout:
     for (const error of result.errors ?? []) io.stderr(`Error: ${redactSafe(error)}\n`);
   } else if (!parsed.quiet) {
     if (typeof result.data === 'string') io.stdout(`${redactSafe(result.data)}\n`);
-    else if (command === 'search' && Array.isArray(result.data)) io.stdout(`${redactSafe(formatSearch(result.data))}\n`);
     else if (command === 'context' && result.data && typeof result.data === 'object' && 'items' in result.data) io.stdout(`${redactSafe(formatContext((result.data as { items: Parameters<typeof formatContext>[0] }).items))}\n`);
     else if (result.data !== undefined) io.stdout(`${redactSafe(JSON.stringify(result.data, null, 2))}\n`);
     for (const warning of result.warnings ?? []) io.stderr(`Warning: ${redactSafe(warning)}\n`);
