@@ -5,7 +5,7 @@ import { CLAUDE_CODE_GUIDELINES } from './claude-code/index.js';
 import { CODEX_GUIDELINES } from './codex/index.js';
 import { checkInstructions } from './instructions.js';
 
-export type IntegrationCheck = { id: string; status: 'installed' | 'missing' | 'stale'; detail?: string; fix?: string };
+export type IntegrationCheck = { id: string; status: 'installed' | 'missing' | 'stale' | 'conflict'; detail?: string; fix?: string };
 
 function commandOnPath(command: string): boolean {
   const extensions = process.platform === 'win32' ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';') : [''];
@@ -57,5 +57,9 @@ export async function checkIntegrations(home: string): Promise<IntegrationCheck[
     ...(!result.matches ? { fix: `cairn waymark setup --harness ${['claude-code', 'codex', 'opencode'][index]!}` } : {}),
   }));
   const hooks: IntegrationCheck = { id: 'claude-code hooks', status: claudeHookStatus, ...(claudeHookStatus !== 'installed' ? { detail: claudeHookStatus === 'stale' ? 'stale command path' : undefined, fix: hookFix } : {}) };
-  return [hooks, ...instructions];
+  // An output-compression hook (caveman) can replace function bodies in Read and git diff output with "body elided", which defeats a search that points at that code. Agents reported it four times.
+  const compression: IntegrationCheck[] = JSON.stringify(claude?.hooks ?? {}).toLowerCase().includes('caveman')
+    ? [{ id: 'output compression', status: 'conflict', detail: 'a caveman hook can replace code with "body elided" in Read and git diff output', fix: 'exclude source files from its compression, or recover text with caveman_retrieve' }]
+    : [];
+  return [hooks, ...instructions, ...compression];
 }

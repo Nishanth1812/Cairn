@@ -100,3 +100,14 @@ test('feedback under 20 characters is refused and records nothing', () => {
   assert.throws(() => cli('feedback', '--session', `${session}-`, '--kind', 'miss', '--query', 'computeInvoiceTotal', 'nope'), (error) => /four words and 20 characters/.test(error.stdout));
   assert.deepEqual(rowsFor(`${session}-`), []);
 });
+
+test('a search of a file outside the repo is not a code search and is not recorded', () => {
+  const session = 'bash-gate-outside';
+  const log = join(home, 'test-run.log');
+  assert.equal(bash(session, `grep -c FAILED "${log}"`), null);
+  assert.equal(bash(session, `grep -n error ${log} | head -5`), null);
+  assert.equal(bash(session, `find ${home} -name "*.log"`), null);
+  assert.deepEqual(rowsFor(`${session}-`), []);
+  assert.ok(denied(bash(session, `grep -rn computeInvoiceTotal src ${log}`)), 'a repo path alongside keeps it a code search');
+  assert.ok(denied(bash(session, 'grep -rn computeInvoiceTotal')), 'no path searches the repo');
+});

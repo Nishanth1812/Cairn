@@ -34,7 +34,7 @@ export async function runHookCommand(event: string | undefined): Promise<{ code:
       await runCheckpointHook({ stateDir: hookStateDir() });
       return '';
     }, 400);
-    if (data === undefined) await logHookFailure(hookStateDir(), new Error('Hook timed out'));
+    if (data === undefined) await logHookFailure(hookStateDir(), new Error(`Hook timed out: ${event} in ${process.cwd()}${input.tool ? `, ${input.tool}` : ''}`));
     return { code: 0, data: data || undefined };
   } catch (error) { await logHookFailure(hookStateDir(), error); return { code: 0 }; }
 }

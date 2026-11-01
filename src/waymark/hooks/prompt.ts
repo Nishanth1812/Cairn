@@ -1,5 +1,5 @@
 import { stat } from 'node:fs/promises';
-import { relative, resolve, sep } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { openDatabase } from '../storage/db.js';
 import { hookGitRoot, repoFor } from './claude.js';
 import { estimateTokens } from '../core/estimate/tokenEstimator.js';
@@ -81,6 +81,27 @@ export function isBashSearch(command: string): boolean {
   return command.split(/&&|\|\||;|\n|\(/).some((segment) => BASH_SEARCH.test(segment.trim()));
 }
 
+// "grep -c FAILED /tmp/test.log": a search whose file arguments all lie outside the repo is not a code search Waymark could have answered.
+export function searchesOutsideRepo(command: string, cwd: string, root: string | null): boolean {
+  if (!root) return false;
+  const segments = command.split(/&&|\|\||;|\n|\(/).map((segment) => segment.trim()).filter((segment) => BASH_SEARCH.test(segment));
+  return segments.length > 0 && segments.every((segment) => {
+    // Words up to the first pipe, without redirections: `grep x file.log | head` searches only file.log.
+    const tokens = (segment.split('|')[0]!.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).filter((token) => !/^\d*[<>&]/.test(token));
+    const grepLike = /^(?:(?:sudo|xargs)\s+)?(?:e?grep|fgrep|rg|ag)(?=\s|$)/.test(segment);
+    // find takes its paths before the first expression; grep, rg and ag take the pattern first, then paths, with flags anywhere.
+    // `-e PATTERN` and flag values (`-A 3`) read as extra operands, which can only keep a search gated, never exempt one.
+    const words = tokens.slice(1);
+    const operands = grepLike ? words.filter((token) => !token.startsWith('-')).slice(1) : words.slice(0, Math.max(0, words.findIndex((token) => /^[-!(]/.test(token)) === -1 ? words.length : words.findIndex((token) => /^[-!(]/.test(token))));
+    const paths = operands.map((token) => token.replace(/^["']|["']$/g, ''));
+    return paths.length > 0 && paths.every((path) => {
+      if (path.startsWith('~')) return true;
+      const inside = relative(root, resolve(cwd, path));
+      return inside.startsWith('..') || isAbsolute(inside);
+    });
+  });
+}
+
 // Waymark's own commands stay open to a blocked agent: they are how it searches and files feedback. Quoted text (a feedback note) may hold anything; chaining or redirecting may not.
 const WAYMARK_COMMAND = /^cairn waymark (?:search|context|feedback|stats)(?:\s|$)/;
 export function isWaymarkCommand(command: string): boolean {
@@ -102,11 +123,11 @@ export async function runReadNudge(options: { cwd?: string; stateDir: string; fi
   const lockOrMinified = /(?:lock\.json|\.lock|\.min\.\w+|\.map)$/i.test(options.filePath ?? '');
   const size = options.tool === 'Read' && !binary && !options.ranged && options.filePath && !lockOrMinified ? await stat(options.filePath).then((info) => (info.isFile() ? info.size : 0), () => 0) : 0;
   const whole = size >= LARGE_READ_BYTES;
-  const lookup = options.tool === 'Bash' ? (isBashSearch(command) ? BASH_SEARCH_TOOL : undefined)
+  const root = await hookGitRoot(resolve(options.cwd ?? process.cwd()));
+  const lookup = options.tool === 'Bash' ? (isBashSearch(command) && !searchesOutsideRepo(command, resolve(options.cwd ?? process.cwd()), root) ? BASH_SEARCH_TOOL : undefined)
     : options.tool === 'Read' ? (binary ? undefined : whole ? WHOLE_READ_TOOL : 'Read')
       : options.tool === 'Grep' || options.tool === 'Glob' ? options.tool : undefined;
   const sweep = lookup !== undefined && SWEEP_TOOLS.includes(lookup);
-  const root = await hookGitRoot(resolve(options.cwd ?? process.cwd()));
   // Where a Read landed, relative to the repo, so stats can tell whether the agent read a file a lookup returned.
   const relativeRead = options.tool === 'Read' && options.filePath && root ? relative(root, resolve(options.cwd ?? process.cwd(), options.filePath)).split(sep).join('/') : '';
   const readPaths = relativeRead && !relativeRead.startsWith('..') ? [relativeRead] : undefined;
