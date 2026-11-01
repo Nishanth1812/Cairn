@@ -13,3 +13,4 @@ Thumbs.db
 coverage/
 weft.db*
 .test-tmp/
+dist-next/

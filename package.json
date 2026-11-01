@@ -20,8 +20,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "prebuild": "node -e \"require('node:fs').rmSync('dist-next',{recursive:true,force:true})\"",
     "build": "tsc --noEmit && rolldown -c",
+    "postbuild": "node -e \"const f=require('node:fs');f.rmSync('dist',{recursive:true,force:true});f.renameSync('dist-next','dist')\"",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/waymark",
     "test": "node --test \"tests/waymark/*.test.mjs\"",
@@ -39,7 +40,7 @@
   ],
   "license": "GPL-3.0-only",
   "dependencies": {
-    "better-sqlite3": "^11.8.1"
+    "better-sqlite3": "^12.11.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

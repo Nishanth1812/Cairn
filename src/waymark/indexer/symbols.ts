@@ -8,10 +8,12 @@ const rules: Record<string, Rule[]> = {
     { regex: /^\s*(?:export\s+)?interface\s+([\w$]+)/, kind: 'interface' },
     { regex: /^\s*(?:export\s+)?type\s+([\w$]+)/, kind: 'type' },
     { regex: /^\s*(?:export\s+)?(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|[\w$]+\s*=>)/, kind: 'function' },
+    // Top-level constants only (column 0): a template, config object or message that a query names by identifier.
+    { regex: /^(?:export\s+)?(?:const|let|var)\s+([\w$]+)\s*(?::[^=]+)?=/, kind: 'variable' },
     { regex: /^\s*(?:async\s+)?(?:static\s+)?([\w$]+)\s*\([^;]*\)\s*\{/, kind: 'method' },
   ],
   py: [ { regex: /^\s*(?:async\s+)?def\s+([\w]+)/, kind: 'function' }, { regex: /^\s*class\s+([\w]+)/, kind: 'class' } ],
-  go: [ { regex: /^\s*func\s+(?:\([^)]*\)\s*)?([\w]+)/, kind: 'function' }, { regex: /^\s*type\s+([\w]+)\s+(?:struct|interface)\b/, kind: 'type' } ],
+  go: [ { regex: /^(?:const|var)\s+([\w]+)\s*(?:[\w.*[\]]+\s*)?=/, kind: 'variable' }, { regex: /^\s*func\s+(?:\([^)]*\)\s*)?([\w]+)/, kind: 'function' }, { regex: /^\s*type\s+([\w]+)\s+(?:struct|interface)\b/, kind: 'type' } ],
   rs: [ { regex: /^\s*(?:pub\s+)?(?:async\s+)?fn\s+([\w]+)/, kind: 'function' }, { regex: /^\s*(?:pub\s+)?struct\s+([\w]+)/, kind: 'class' }, { regex: /^\s*(?:pub\s+)?enum\s+([\w]+)/, kind: 'type' }, { regex: /^\s*(?:pub\s+)?trait\s+([\w]+)/, kind: 'interface' }, { regex: /^\s*(?:pub\s+)?type\s+([\w]+)/, kind: 'type' } ],
   java: [ { regex: /^\s*(?:(?:public|protected|private|static|final|abstract|synchronized)\s+)*class\s+([\w]+)/, kind: 'class' }, { regex: /^\s*(?:(?:public|protected|private|static|final|abstract)\s+)*interface\s+([\w]+)/, kind: 'interface' }, { regex: /^\s*(?:(?:public|protected|private|static|final|synchronized)\s+)*[\w<>\[\], ?]+\s+([\w]+)\s*\([^;]*\)\s*\{/, kind: 'method' } ],
   c: [ { regex: /^\s*(?:typedef\s+)?(?:struct|enum)\s+([\w]+)/, kind: 'type' }, { regex: /^\s*(?:[\w*]+\s+)+([\w]+)\s*\([^;]*\)\s*\{/, kind: 'function' } ],
