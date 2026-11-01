@@ -11,7 +11,11 @@ Top-level fields:
 - `toolTokens` — `{ calls, returned }` for `search` and `context`; `returned` is the estimated tokens of the text the CLI prints (`formatSearch` / `formatContext`), not the larger `--json` payload
 - `promptHook` — `{ injections, returned }` for `hook_prompt`
 - `quality` — whether Waymark answered, from rows already written
+  - `followThroughPercent` — of the lookups that returned files (in a known session), the share followed by a `Read` of one of those files before the session's next lookup; `null` until lookups with recorded paths exist. Higher is better. The returned and read paths are stored in `tool_calls.paths`.
   - `fallbackPercent` — share of `search`/`context` calls (in a known session) after which the same session ran a sweep before its next Waymark lookup; `null` when there were none. Lower is better.
   - `feedback` — `{ miss, bad_output, error }` counts from `cairn waymark feedback`
+- `byRepo` — up to ten `{ repo, lookups, returned }` rows, most-used first, for `search` and `context`
+
+`cairn waymark feedback list [--since 7d] [--limit N]` prints the filed feedback, newest first.
 
 Window: `--since` accepts a duration such as `1d`, `7d` or `30d`. Omitting it applies no time filter.

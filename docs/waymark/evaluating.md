@@ -5,7 +5,8 @@ Waymark does not estimate savings; it reports only what it observed. Read `cairn
 | Signal | Healthy | Act when |
 |---|---|---|
 | Adoption | rising or steady above ~70% | falling: agents are ignoring it |
-| Fell back to a sweep after a lookup | falling | above ~30%: results are missing what agents need; read the `miss` feedback queries |
+| Read a returned file after a lookup | rising, or steady above ~50% | low: results are not what agents open; compare with the `miss` queries |
+| Fell back to a sweep after a lookup | falling | above ~30%: results are missing what agents need; run `cairn waymark feedback list --since 7d` and read the `miss` queries |
 | Feedback `miss` / `bad_output` / `error` | few, and shrinking | a repeated query: fix ranking or indexing for it |
 | Waymark returned tokens per call | a few hundred to ~1.5k | creeping up: output is bloating |
 

@@ -116,7 +116,11 @@ CREATE INDEX idx_lookup_feedback_session ON lookup_feedback(session);
 const v6 = `
 ALTER TABLE tool_calls ADD COLUMN query TEXT;
 `;
-const migrations = [{ version: 1, sql: v1 }, { version: 2, sql: v2 }, { version: 3, sql: v3 }, { version: 4, sql: v4 }, { version: 5, sql: v5 }, { version: 6, sql: v6 }];
+// The files each lookup returned (search/context) or read (Read), so stats can tell whether an agent used what Waymark found.
+const v7 = `
+ALTER TABLE tool_calls ADD COLUMN paths TEXT;
+`;
+const migrations = [{ version: 1, sql: v1 }, { version: 2, sql: v2 }, { version: 3, sql: v3 }, { version: 4, sql: v4 }, { version: 5, sql: v5 }, { version: 6, sql: v6 }, { version: 7, sql: v7 }];
 const checksum = (sql: string) => createHash('sha256').update(sql).digest('hex');
 
 export function migrate(db: Database.Database, now: () => string = () => new Date().toISOString()): number[] {

@@ -1,5 +1,5 @@
 import { stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
 import { openDatabase } from '../storage/db.js';
 import { hookGitRoot, repoFor } from './claude.js';
 import { estimateTokens } from '../core/estimate/tokenEstimator.js';
@@ -107,13 +107,16 @@ export async function runReadNudge(options: { cwd?: string; stateDir: string; fi
       : options.tool === 'Grep' || options.tool === 'Glob' ? options.tool : undefined;
   const sweep = lookup !== undefined && SWEEP_TOOLS.includes(lookup);
   const root = await hookGitRoot(resolve(options.cwd ?? process.cwd()));
+  // Where a Read landed, relative to the repo, so stats can tell whether the agent read a file a lookup returned.
+  const relativeRead = options.tool === 'Read' && options.filePath && root ? relative(root, resolve(options.cwd ?? process.cwd(), options.filePath)).split(sep).join('/') : '';
+  const readPaths = relativeRead && !relativeRead.startsWith('..') ? [relativeRead] : undefined;
   const db = openDatabase(options.stateDir);
   let sweeps = 0, feedback = 0;
   try {
     migrate(db); // the hook can run before any CLI command has migrated this database
     const repoId = root ? repoFor(db, root)?.id ?? null : null;
     // Lookups are recorded only in a git checkout. Sweeps count even in a repo Waymark has not indexed yet; other lookups only where it has.
-    if (lookup && root && (repoId || sweep)) { try { recordToolCall(db, { repoId, tool: lookup, session: options.session ?? null, returnedTokens: 0, ms: null }); } catch { /* Telemetry must not interrupt the session. */ } }
+    if (lookup && root && (repoId || sweep)) { try { recordToolCall(db, { repoId, tool: lookup, session: options.session ?? null, returnedTokens: 0, ms: null, paths: readPaths }); } catch { /* Telemetry must not interrupt the session. */ } }
     if (options.session) {
       sweeps = (db.prepare(`SELECT COUNT(*) AS n FROM tool_calls WHERE session = ? AND tool IN (${SWEEP_TOOLS.map(() => '?').join(', ')})`).get(options.session, ...SWEEP_TOOLS) as { n: number }).n;
       feedback = (db.prepare('SELECT COUNT(*) AS n FROM lookup_feedback WHERE session = ?').get(options.session) as { n: number }).n;

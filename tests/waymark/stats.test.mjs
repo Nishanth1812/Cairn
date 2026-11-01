@@ -55,3 +55,13 @@ test('a lookup followed by a sweep in the same session counts as a fallback; fil
   run('feedback', '--session', 'adoption-test-', '--query', 'computeInvoiceTotal', '--kind', 'miss', 'search returned nothing for the function name');
   assert.equal(cli('stats').quality.feedback.miss, 1);
 });
+
+test('reading a file a lookup returned counts as following through; feedback list shows what was filed', () => {
+  const inSession = { ...env, CLAUDE_CODE_SESSION_ID: 'adoption-test' };
+  execFileSync('node', ['--no-warnings', BIN, 'search', 'computeInvoiceTotal'], { cwd: repo, env: inSession, encoding: 'utf8' });
+  preToolUse('Read', { file_path: join(repo, 'src', 'billing.js'), offset: 1, limit: 3 }); // a file that search returned
+  // Three lookups in this session so far; only the last was followed by a read of a returned file.
+  assert.equal(cli('stats').quality.followThroughPercent, 33);
+  const listed = execFileSync('node', ['--no-warnings', BIN, 'feedback', 'list'], { cwd: repo, env, encoding: 'utf8' });
+  assert.match(listed, /miss .*\n {2}query: computeInvoiceTotal\n {2}search returned nothing for the function name/);
+});

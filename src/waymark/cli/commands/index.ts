@@ -287,15 +287,15 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       const sessionId = process.env.CLAUDE_CODE_SESSION_ID;
       const session = sessionId ? `${sessionId}-` : null;
       // `shown` is the text the CLI prints (formatSearch/formatContext), not the full JSON payload, which is ~10x larger for search.
-      const respond = <T>(data: T, shown: string): Result => {
-        try { recordToolCall(db, { repoId: multi ? null : repos[0]!.id, tool: group, session, returnedTokens: estimateTokens(shown), ms: null, query: redactSafe(query) }); } catch { /* Telemetry must not interrupt the session. */ }
+      const respond = <T>(data: T, shown: string, found: Array<{ path: string }> = []): Result => {
+        try { recordToolCall(db, { repoId: multi ? null : repos[0]!.id, tool: group, session, returnedTokens: estimateTokens(shown), ms: null, query: redactSafe(query), paths: multi ? undefined : [...new Set(found.map((item) => item.path))] }); } catch { /* Telemetry must not interrupt the session. */ }
         return { code: 0, data };
       };
       const limit = requireCount(option(args, '--limit'), '--limit', 20);
       const rankedHits = (count: number) => repos.flatMap((repo) => rankCandidates(searchChunks(db, repo.id, query, count), query).map((hit) => prefixed(repo, hit))).sort((a, b) => b.score - a.score);
       if (group === 'search' && args.includes('--exact')) {
         const all = repos.flatMap((repo) => exactMatches(db, repo.id, query).map((match) => prefixed(repo, match))), shownMatches = all.slice(0, requireCount(option(args, '--limit'), '--limit', 100));
-        return respond(compactOutput ? formatExact(shownMatches, all.length) : shownMatches, formatExact(shownMatches, all.length));
+        return respond(compactOutput ? formatExact(shownMatches, all.length) : shownMatches, formatExact(shownMatches, all.length), shownMatches);
       }
       const kind = group === 'search' ? option(args, '--kind') : undefined;
       if (kind) {
@@ -303,16 +303,16 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         // The query's words narrow the list to matching names or paths; `*` lists every symbol of the kind.
         const terms = query === '*' ? [] : (query.match(/[\p{L}\p{N}_]+/gu) ?? []);
         const all = repos.flatMap((repo) => symbolsByKind(db, repo.id, kind, terms).map((hit) => prefixed(repo, hit))), shownHits = all.slice(0, requireCount(option(args, '--limit'), '--limit', 100));
-        return respond(compactOutput ? formatSymbols(shownHits, all.length) : shownHits, formatSymbols(shownHits, all.length));
+        return respond(compactOutput ? formatSymbols(shownHits, all.length) : shownHits, formatSymbols(shownHits, all.length), shownHits);
       }
       if (group === 'search') {
         const hits = rankedHits(limit).slice(0, limit);
-        return respond(compactOutput ? formatSearch(hits, query) : hits, formatSearch(hits, query));
+        return respond(compactOutput ? formatSearch(hits, query) : hits, formatSearch(hits, query), hits);
       }
       const results = rankedHits(100);
       const contextHits = compactOutput ? results.filter((hit, index) => results.findIndex(other => other.path === hit.path) === index).slice(0, 2) : results;
       const packed = packContext(contextHits, requireCount(option(args, '--budget'), '--budget', 1500), query);
-      return respond(packed, formatContext(packed.items));
+      return respond(packed, formatContext(packed.items), packed.items);
     } finally { db.close(); }
   }
   if (group === 'task') {
@@ -347,6 +347,14 @@ export async function runCommand(args: string[], compactOutput = false): Promise
   }
   if (group === 'health') { const db = database(); try { const repo = repoRow(db, positional(args.slice(1))[0]); const data = await checkRepoHealth(repo.root_path); return { code: findings(data) ? 4 : 0, data, warnings: findings(data) ? ['Health findings were reported.'] : [] }; } finally { db.close(); } }
   if (group === 'portfolio') { const db = database(); try { const repos = allRepos(db).map((repo) => ({ name: repo.name, rootPath: repo.rootPath, registeredAt: repo.registeredAt })); const data = await generatePortfolioSummary(repos); return { code: findings(data.totals) ? 4 : 0, data }; } finally { db.close(); } }
+  if (group === 'feedback' && positional(args.slice(1))[0] === 'list' && !option(args, '--kind')) {
+    const db = database(); try {
+      const since = duration(option(args, '--since'));
+      const rows = db.prepare('SELECT f.id AS id, f.kind AS kind, f.observed_at AS at, r.display_name AS repo, f.query AS query, f.note AS note FROM lookup_feedback f LEFT JOIN repositories r ON r.id = f.repo_id WHERE (? IS NULL OR f.observed_at>=?) ORDER BY f.id DESC LIMIT ?')
+        .all(since ?? null, since ?? null, requireCount(option(args, '--limit'), '--limit', 20)) as Array<{ id: number; kind: string; at: string; repo: string | null; query: string | null; note: string }>;
+      return { code: 0, data: compactOutput ? rows.map((row) => `#${row.id} ${row.kind} ${row.at.slice(0, 10)} ${row.repo ?? '-'}\n  query: ${row.query ?? '-'}\n  ${row.note}`).join('\n\n') || 'No feedback filed.' : rows };
+    } finally { db.close(); }
+  }
   if (group === 'feedback') {
     // The gate reads these rows: an agent that filed verified feedback may run more lookups.
     const note = positional(args.slice(1)).join(' ').trim(), kind = option(args, '--kind'), query = option(args, '--query'), session = option(args, '--session');
@@ -373,6 +381,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         ? `Adoption: ${stats.adoption.percent == null ? 'no lookups yet' : `${stats.adoption.percent}%`} of lookups through Waymark (${stats.adoption.weftCalls} search/context, ${stats.adoption.nativeCalls} Grep/Glob/Bash search/whole-file Read)
 Waymark returned: ${stats.toolTokens.returned} tokens
 Prompt hook: ${stats.promptHook.injections} injections, ${stats.promptHook.returned} tokens
+Read a returned file after a lookup: ${stats.quality.followThroughPercent == null ? 'n/a (no lookups with recorded paths yet)' : `${stats.quality.followThroughPercent}%`}
 Fell back to a sweep after a lookup: ${stats.quality.fallbackPercent == null ? 'n/a' : `${stats.quality.fallbackPercent}%`}; feedback filed: ${stats.quality.feedback.miss} miss, ${stats.quality.feedback.bad_output} bad output, ${stats.quality.feedback.error} error`
         : stats };
     } finally { db.close(); }
