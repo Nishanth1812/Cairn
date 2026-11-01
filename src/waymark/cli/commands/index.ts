@@ -34,7 +34,7 @@ import { checkIntegrations } from '../../integrations/doctor.js';
 import { runRetrievalBenchmark } from '../../bench/retrieval.js';
 import { ensureRepoOnboarded, indexWithinLimit } from '../../onboarding/auto.js';
 import { refreshIndex } from '../../indexer/refresh.js';
-import { formatContext, formatExact, formatSearch, formatSymbols } from '../format.js';
+import { formatContext, formatExact, formatSearch, formatSymbols, searchRecord } from '../format.js';
 import { exactMatches, SYMBOL_KINDS, symbolsByKind } from '../../context/lookup.js';
 import { onboardWorkspace } from '../../onboarding/workspace.js';
 import { runVerification } from '../../verification/runner.js';
@@ -286,9 +286,9 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       // Same key format the PreToolUse hook uses ("<session_id>-<agent_id>"); the agent id is not in the env, so subagents count under their session.
       const sessionId = process.env.CLAUDE_CODE_SESSION_ID;
       const session = sessionId ? `${sessionId}-` : null;
-      // `shown` is the text the CLI prints (formatSearch/formatContext), not the full JSON payload, which is ~10x larger for search.
+      // Tokens are counted on what the agent receives: the printed text, or the JSON payload under --json.
       const respond = <T>(data: T, shown: string, found: Array<{ path: string }> = []): Result => {
-        try { recordToolCall(db, { repoId: multi ? null : repos[0]!.id, tool: group, session, returnedTokens: estimateTokens(shown), ms: null, query: redactSafe(query), paths: multi ? undefined : [...new Set(found.map((item) => item.path))] }); } catch { /* Telemetry must not interrupt the session. */ }
+        try { recordToolCall(db, { repoId: multi ? null : repos[0]!.id, tool: group, session, returnedTokens: estimateTokens(compactOutput ? shown : JSON.stringify(data)), ms: null, query: redactSafe(query), paths: multi ? undefined : [...new Set(found.map((item) => item.path))] }); } catch { /* Telemetry must not interrupt the session. */ }
         return { code: 0, data };
       };
       const limit = requireCount(option(args, '--limit'), '--limit', 20);
@@ -307,7 +307,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       }
       if (group === 'search') {
         const hits = rankedHits(limit).slice(0, limit);
-        return respond(compactOutput ? formatSearch(hits, query) : hits, formatSearch(hits, query), hits);
+        return respond(compactOutput ? formatSearch(hits, query) : hits.map((hit) => searchRecord(hit, query)), formatSearch(hits, query), hits);
       }
       const results = rankedHits(100);
       const contextHits = compactOutput ? results.filter((hit, index) => results.findIndex(other => other.path === hit.path) === index).slice(0, 2) : results;

@@ -19,12 +19,12 @@ export function rankCandidates(candidates: CandidateChunk[], query: string): Ran
   const hasProseTerm = queryWords.some(word => PROSE_TERM.test(word));
   const hasTestTerm = queryWords.some(word => /test|spec/.test(word));
   const ranked = candidates.map(candidate => {
-    const path = candidate.path.toLocaleLowerCase();
-    const pathParts = path.split(/[\/_.-]/);
+    // camelCase file names (repoRegistry.ts) count as words; a query word that starts with a name part (repository ~ repo) matches it too.
+    const pathParts = candidate.path.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLocaleLowerCase().split(/[\/_. -]/);
     const symbolNames = (candidate.symbols ?? []).map(name => name.toLocaleLowerCase());
     const symbolMatch = queryWords.some(word => symbolNames.some(name => name === word || name.includes(word)));
     const defScore = (candidate.defines ?? []).some(name => queryWords.includes(name.toLocaleLowerCase())) ? 1 : 0;
-    const pathMatch = queryWords.some(word => pathParts.some(part => part === word || part.includes(word)));
+    const pathMatch = queryWords.some(word => pathParts.some(part => part === word || part.includes(word) || (part.length >= 4 && word.startsWith(part))));
     const pathScore = pathMatch ? 1 : 0;
     const symbolScore = symbolMatch ? 1 : 0;
     const testPenalty = (isLowValue(candidate.path) && !hasTestTerm) || (isProse(candidate.path) && !hasProseTerm) ? 0.35 : 0;

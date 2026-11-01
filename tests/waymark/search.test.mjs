@@ -55,3 +55,8 @@ test('a search after a directory change with no content change re-stamps the ind
   search('computeInvoiceTotal');
   assert.ok(builtAt() >= Math.floor(statSync(join(repo, 'src')).mtimeMs));
 });
+
+test('words inside a camelCase name match, and so do their stems', () => {
+  assert.ok(search('invoice').includes('src/billing.js'));
+  assert.ok(search('computing totals').includes('src/billing.js'));
+});

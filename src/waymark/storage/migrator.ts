@@ -120,7 +120,29 @@ ALTER TABLE tool_calls ADD COLUMN query TEXT;
 const v7 = `
 ALTER TABLE tool_calls ADD COLUMN paths TEXT;
 `;
-const migrations = [{ version: 1, sql: v1 }, { version: 2, sql: v2 }, { version: 3, sql: v3 }, { version: 4, sql: v4 }, { version: 5, sql: v5 }, { version: 6, sql: v6 }, { version: 7, sql: v7 }];
+// The full-text index now reads search_text (code plus the words inside camelCase names) and stems words, so "indexing" finds "index".
+// Existing rows keep plain text until their repo is re-indexed.
+const v8 = `
+ALTER TABLE chunks ADD COLUMN search_text TEXT NOT NULL DEFAULT '';
+DROP TRIGGER chunks_ai; DROP TRIGGER chunks_ad; DROP TRIGGER chunks_au;
+DROP TABLE chunk_fts;
+UPDATE chunks SET search_text = safe_text;
+CREATE VIRTUAL TABLE chunk_fts USING fts5(
+  search_text, content='chunks', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER chunks_ai AFTER INSERT ON chunks BEGIN
+  INSERT INTO chunk_fts(rowid, search_text) VALUES (new.id, new.search_text);
+END;
+CREATE TRIGGER chunks_ad AFTER DELETE ON chunks BEGIN
+  INSERT INTO chunk_fts(chunk_fts, rowid, search_text) VALUES('delete', old.id, old.search_text);
+END;
+CREATE TRIGGER chunks_au AFTER UPDATE ON chunks BEGIN
+  INSERT INTO chunk_fts(chunk_fts, rowid, search_text) VALUES('delete', old.id, old.search_text);
+  INSERT INTO chunk_fts(rowid, search_text) VALUES (new.id, new.search_text);
+END;
+INSERT INTO chunk_fts(chunk_fts) VALUES('rebuild');
+`;
+const migrations = [{ version: 1, sql: v1 }, { version: 2, sql: v2 }, { version: 3, sql: v3 }, { version: 4, sql: v4 }, { version: 5, sql: v5 }, { version: 6, sql: v6 }, { version: 7, sql: v7 }, { version: 8, sql: v8 }];
 const checksum = (sql: string) => createHash('sha256').update(sql).digest('hex');
 
 export function migrate(db: Database.Database, now: () => string = () => new Date().toISOString()): number[] {

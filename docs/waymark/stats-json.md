@@ -8,7 +8,7 @@ Top-level fields:
   - `percent` — share of code lookups that went through Waymark: `weftCalls / (weftCalls + nativeCalls)`, rounded; `null` when there were no lookups
   - `weftCalls` — `search` and `context` calls
   - `nativeCalls` — sweeps only: `Grep`, `Glob`, grep/rg/find in Bash, and whole-file reads of large files. Counted before the hook's early returns, so a sweep the gate denies still counts. Ranged `Read`s are the intended follow-up to a search and are not counted.
-- `toolTokens` — `{ calls, returned }` for `search` and `context`; `returned` is the estimated tokens of the text the CLI prints (`formatSearch` / `formatContext`), not the larger `--json` payload
+- `toolTokens` — `{ calls, returned }` for `search` and `context`; `returned` is the estimated tokens of what the caller receives: the text the CLI prints (`formatSearch` / `formatContext`), or the JSON payload under `--json`
 - `promptHook` — `{ injections, returned }` for `hook_prompt`
 - `quality` — whether Waymark answered, from rows already written
   - `followThroughPercent` — of the lookups that returned files (in a known session), the share followed by a `Read` of one of those files before the session's next lookup; `null` until lookups with recorded paths exist. Higher is better. The returned and read paths are stored in `tool_calls.paths`.

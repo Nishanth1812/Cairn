@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { orderedFingerprint } from '../core/fingerprint/hasher.js';
 import { detectLanguage, extractSymbols } from './symbols.js';
 import { chunkText } from './chunker.js';
+import { buildSearchText } from './searchText.js';
 import { walkRepository, type CandidateFile, type PreviousFile } from './walker.js';
 
 export interface IndexSummary {
@@ -13,7 +14,7 @@ export interface IndexSummary {
 }
 
 // Bump when what is stored per file changes (symbol rules, chunking): refreshIndex then rebuilds every repo on its next lookup.
-export const INDEX_SCHEMA_VERSION = 3;
+export const INDEX_SCHEMA_VERSION = 4;
 
 export async function indexRepository(
   db: Database.Database, repoId: string, repoRoot: string, options: { force?: boolean } = {},
@@ -79,7 +80,7 @@ async function indexRepositoryLocked(
   const generationId = Number(db.prepare('INSERT INTO index_generations (repo_id, fingerprint, status, started_at) VALUES (?, ?, \'building\', ?)').run(repoId, fingerprint, now).lastInsertRowid);
   const insertFile = db.prepare('INSERT INTO files (repo_id, generation_id, path, content_hash, mtime_ms, size_bytes, language, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
   const insertSymbol = db.prepare('INSERT INTO symbols (file_id, name, kind, start_line, end_line) VALUES (?, ?, ?, ?, ?)');
-  const insertChunk = db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  const insertChunk = db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_text, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
   let symbolCount = 0;
   let chunkCount = 0;
   try {
@@ -95,9 +96,9 @@ async function indexRepositoryLocked(
         const fileId = Number(insertFile.run(repoId, generationId, file.path, file.contentHash, Math.round(file.mtimeMs), file.sizeBytes, language ?? null, now).lastInsertRowid);
         const old = previousByPath.get(file.path)!;
         const symbols = db.prepare('SELECT name, kind, start_line, end_line FROM symbols WHERE file_id = ?').all(old.id) as Array<{ name: string; kind: string; start_line: number; end_line: number }>;
-        const chunks = db.prepare('SELECT ordinal, start_line, end_line, content_hash, safe_text, token_estimate FROM chunks WHERE file_id = ?').all(old.id) as Array<{ ordinal: number; start_line: number; end_line: number; content_hash: string; safe_text: string; token_estimate: number }>;
+        const chunks = db.prepare('SELECT ordinal, start_line, end_line, content_hash, safe_text, search_text, token_estimate FROM chunks WHERE file_id = ?').all(old.id) as Array<{ ordinal: number; start_line: number; end_line: number; content_hash: string; safe_text: string; search_text: string; token_estimate: number }>;
         for (const symbol of symbols) insertSymbol.run(fileId, symbol.name, symbol.kind, symbol.start_line, symbol.end_line);
-        for (const chunk of chunks) insertChunk.run(fileId, chunk.ordinal, chunk.start_line, chunk.end_line, chunk.content_hash, chunk.safe_text, chunk.token_estimate);
+        for (const chunk of chunks) insertChunk.run(fileId, chunk.ordinal, chunk.start_line, chunk.end_line, chunk.content_hash, chunk.safe_text, chunk.search_text, chunk.token_estimate);
         symbolCount += symbols.length;
         chunkCount += chunks.length;
       }
@@ -121,7 +122,7 @@ export function storeFile(db: Database.Database, repoId: string, generationId: n
   const insertSymbol = db.prepare('INSERT INTO symbols (file_id, name, kind, start_line, end_line) VALUES (?, ?, ?, ?, ?)');
   for (const symbol of symbols) insertSymbol.run(fileId, symbol.name, symbol.kind, symbol.startLine, symbol.endLine);
   const chunks = chunkText(file.content, symbols);
-  const insertChunk = db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?)');
-  for (const chunk of chunks) insertChunk.run(fileId, chunk.ordinal, chunk.startLine, chunk.endLine, chunk.contentHash, chunk.safeText, chunk.tokenEstimate);
+  const insertChunk = db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_text, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+  for (const chunk of chunks) insertChunk.run(fileId, chunk.ordinal, chunk.startLine, chunk.endLine, chunk.contentHash, chunk.safeText, buildSearchText(chunk.safeText), chunk.tokenEstimate);
   return { symbols: symbols.length, chunks: chunks.length };
 }

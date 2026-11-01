@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Search finds words inside camelCase names (`invoice` finds `computeInvoiceTotal`) and matches word stems (`indexing` finds `index`). Existing repos re-index once, automatically. Benchmark 17 to 19 of 25.
+- `search --json` returns the matched line instead of the whole chunk (about 7x smaller), and stats count the tokens a caller really received, including under `--json`.
 - README rewritten for first-time users; added CONTRIBUTING and SECURITY.
 - Package renamed to `@nishanth1812/cairn` (the unscoped `cairn` name is taken on npm); the command is still `cairn`.
 

@@ -20,6 +20,11 @@ export function formatSearch(items: Location[], query = ''): string {
   return unique.map(item => `${header(item)}\n${matchingLine(item, query)}`).join('\n\n');
 }
 
+/** The --json form of a search hit: where it is and the line that matched, not the whole chunk (about 15x smaller). */
+export function searchRecord(item: Location & { score: number; selectionReason: string }, query = '') {
+  return { path: item.path, startLine: item.startLine, endLine: item.endLine, score: item.score, selectionReason: item.selectionReason, symbols: item.symbols ?? [], line: matchingLine(item, query) };
+}
+
 export function formatContext(items: Location[]): string {
   return items.map(item => `${header(item)}\n${item.safeText}`).join('\n\n');
 }
