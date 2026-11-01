@@ -1,13 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
-// realpath expands Windows 8.3 names (RUNNER~1): better-sqlite3 has no Node 24 prebuild, so npm compiles it here, and MSBuild's file tracker crashes when one path appears in both forms.
-const temp = await mkdtemp(join(realpathSync.native(tmpdir()), 'cairn-pack-'));
+const temp = await mkdtemp(join(tmpdir(), 'cairn-pack-'));
 const sandbox = join(temp, 'sandbox');
 const prefix = join(temp, 'prefix');
 const home = join(sandbox, 'home');
