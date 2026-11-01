@@ -20,8 +20,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "prebuild": "node -e \"require('node:fs').rmSync('dist-next',{recursive:true,force:true})\"",
     "build": "tsc --noEmit && rolldown -c",
+    "postbuild": "node -e \"const f=require('node:fs');f.rmSync('dist',{recursive:true,force:true});f.renameSync('dist-next','dist')\"",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/waymark",
     "test": "node --test \"tests/waymark/*.test.mjs\"",

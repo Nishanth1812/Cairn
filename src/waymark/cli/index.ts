@@ -72,5 +72,7 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = { stdout:
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(resolve(process.argv[1]))).href) {
+  // A reader that closes early (`cairn waymark search x | head`) is not an error.
+  process.stdout.on('error', (error: NodeJS.ErrnoException) => { if (error.code !== 'EPIPE') throw error; process.exit(process.exitCode ?? 0); });
   runCli().then((code) => { process.exitCode = code; }).catch((error: unknown) => { process.stderr.write(`${redactSafe(error instanceof Error ? error.message : String(error))}\n`); process.exitCode = 1; });
 }

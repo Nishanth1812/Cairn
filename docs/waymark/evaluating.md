@@ -16,3 +16,7 @@ These show Waymark is used and answers. They do not show that your work got fast
 3. Compare total tokens/cost from the harness's own usage report, turns taken, and whether the result was right.
 
 Judge it on those task comparisons plus the fallback rate, not on adoption alone.
+
+## Retrieval regression check
+
+`cairn waymark bench retrieval` (run from this repo) replays `tests/waymark/golden/queries.json` and reports how many queries return an expected file. Run it before and after any ranking or indexing change. Baseline on 2026-11-01: 18 of 25 queries hit. A change that lowers that number needs a reason.
