@@ -17,7 +17,8 @@ Commands: init, doctor, onboard, instructions, repos, index, search, context, ta
           clean, migrate devpulse
 
 Search: cairn waymark search "<words>" [repo] ranks code by relevance.
-  --exact lists every line containing the text (file:line); --kind function|class|interface|type|method|variable lists definitions (use * for all);
+  --exact lists every case-insensitive literal match (file:line; not a regex); --kind function|class|interface|type|method|variable lists definitions (use * for all);
+  Queries like "class definitions in backend" also return matching symbols;
   --limit N caps the list. Run from a folder of repos to search all of them.
 
 Global flags: --json --quiet --verbose --help --version`;

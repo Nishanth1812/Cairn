@@ -7,6 +7,14 @@ const activeGeneration = (db: Database.Database, repoId: string): number | null 
 
 export interface ExactMatch { path: string; line: number; text: string }
 
+function exactExcerpt(line: string, needle: string): string {
+  const text = line.trim();
+  if (text.length <= 200) return text;
+  const match = text.toLocaleLowerCase().indexOf(needle.toLocaleLowerCase());
+  const start = Math.max(0, Math.min(match - 80, text.length - 200));
+  return `${start ? '…' : ''}${text.slice(start, start + 200)}${start + 200 < text.length ? '…' : ''}`;
+}
+
 /** Every line that contains `text` (case-insensitive, literal), as file:line. Semantic search ranks; this enumerates, for audits like "every reference to src/". */
 export function exactMatches(db: Database.Database, repoId: string, text: string): ExactMatch[] {
   const generation = activeGeneration(db, repoId);
@@ -22,7 +30,7 @@ export function exactMatches(db: Database.Database, repoId: string, text: string
     row.safeText.split(/\r?\n/).forEach((line, index) => {
       const key = `${row.path}:${row.startLine + index}`;
       // Chunks overlap, so the same line can arrive twice.
-      if (line.toLowerCase().includes(needle) && !seen.has(key)) { seen.add(key); found.push({ path: row.path, line: row.startLine + index, text: line.trim().slice(0, 200) }); }
+      if (line.toLowerCase().includes(needle) && !seen.has(key)) { seen.add(key); found.push({ path: row.path, line: row.startLine + index, text: exactExcerpt(line, needle) }); }
     });
   }
   return found;

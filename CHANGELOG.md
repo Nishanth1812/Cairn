@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Structural class and function definition queries now return matching symbols, and exact-match excerpts keep the match visible on long lines.
 - Search finds words inside camelCase names (`invoice` finds `computeInvoiceTotal`) and matches word stems (`indexing` finds `index`). Existing repos re-index once, automatically. Benchmark 17 to 19 of 25.
 - `search --json` returns the matched line instead of the whole chunk (about 6x smaller: on 40 real queries, the same build comparison went from 8,881 to 1,424 tokens on average; the printed text form stayed at about 620-640), and stats count the tokens a caller really received, including under `--json`.
 - Result labels name the symbol the query is about, not the first symbol the chunk mentions. A search where no hit holds every word now says so and points at `--exact` and `--kind`.

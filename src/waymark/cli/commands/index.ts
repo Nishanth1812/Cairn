@@ -308,6 +308,17 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         const all = repos.flatMap((repo) => symbolsByKind(db, repo.id, kind, terms).map((hit) => prefixed(repo, hit))), shownHits = fit(all.slice(0, requireCount(option(args, '--limit'), '--limit', 100)), (hit) => formatSymbols([hit], 1));
         return respond(compactOutput ? formatSymbols(shownHits, all.length) : shownHits, formatSymbols(shownHits, all.length), shownHits);
       }
+      const definitionTerms = new Set(query.toLocaleLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean));
+      let inferredKind: string | undefined;
+      if (group === 'search' && (definitionTerms.has('definition') || definitionTerms.has('definitions'))) {
+        for (const symbolKind of SYMBOL_KINDS) if (definitionTerms.has(symbolKind) || definitionTerms.has(symbolKind === 'class' ? 'classes' : `${symbolKind}s`)) { inferredKind = symbolKind; break; }
+      }
+      if (inferredKind) {
+        const terms = (query.match(/[\p{L}\p{N}_]+/gu) ?? []).filter((term) => !['class', 'classes', 'function', 'functions', 'definition', 'definitions', 'in', 'the', 'a', 'an'].includes(term.toLocaleLowerCase()));
+        const pathTerms = terms.filter((term) => /^(?:frontend|backend|app|routes?|pages?|components?)$/i.test(term));
+        const all = repos.flatMap((repo) => symbolsByKind(db, repo.id, inferredKind, terms).filter((hit) => pathTerms.every((term) => hit.path.toLocaleLowerCase().includes(term.toLocaleLowerCase()))).map((hit) => prefixed(repo, hit))), shownHits = fit(all.slice(0, requireCount(option(args, '--limit'), '--limit', 100)), (hit) => formatSymbols([hit], 1));
+        return respond(compactOutput ? formatSymbols(shownHits, all.length) : shownHits, formatSymbols(shownHits, all.length), shownHits);
+      }
       if (group === 'search') {
         const hits = fit(rankedHits(limit).slice(0, limit), (hit) => formatSearch([hit], query));
         return respond(compactOutput ? formatSearch(hits, query) : hits.map((hit) => searchRecord(hit, query)), formatSearch(hits, query), hits);
