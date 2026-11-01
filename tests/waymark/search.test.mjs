@@ -66,3 +66,9 @@ test('a small --budget cuts the list and says how many were left out', () => {
   assert.match(text, /\.\.\. \d+ more matches \(raise --limit or --budget\)/);
   assert.equal(text.split('\n').filter((line) => line.startsWith('src/')).length, 1);
 });
+
+test('a weak multi-word search points at --exact and --kind; a strong one stays quiet', () => {
+  const text = (query) => execFileSync('node', ['--no-warnings', BIN, 'search', query], { cwd: repo, env, encoding: 'utf8' });
+  assert.match(text('invoice zzNeverWritten qqNowhere'), /No result contains every word/);
+  assert.doesNotMatch(text('computeInvoiceTotal'), /No result contains every word/);
+});
