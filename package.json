@@ -25,7 +25,7 @@
   "scripts": {
     "prebuild": "node -e \"require('node:fs').rmSync('dist-next',{recursive:true,force:true})\"",
     "build": "tsc --noEmit && rolldown -c",
-    "postbuild": "node -e \"const f=require('node:fs');f.rmSync('dist',{recursive:true,force:true});f.renameSync('dist-next','dist')\"",
+    "postbuild": "node -e \"const f=require('node:fs');try{f.renameSync('dist','dist-old')}catch{}f.renameSync('dist-next','dist');f.rmSync('dist-old',{recursive:true,force:true})\"",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/waymark",
     "test": "node --test \"tests/waymark/*.test.mjs\"",

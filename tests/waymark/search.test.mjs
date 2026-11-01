@@ -72,3 +72,11 @@ test('a weak multi-word search points at --exact and --kind; a strong one stays 
   assert.match(text('invoice zzNeverWritten qqNowhere'), /No result contains every word/);
   assert.doesNotMatch(text('computeInvoiceTotal'), /No result contains every word/);
 });
+
+test('context shows a window around the match when the only hit is bigger than the budget', () => {
+  const padding = Array.from({ length: 400 }, (_, i) => `  const filler${i} = ${i}; // padding that makes this function far larger than the budget`).join('\n');
+  writeFileSync(join(repo, 'src', 'long.js'), `export function longRunningJob() {\n${padding}\n  const zzNeedleInside = 1;\n${padding}\n}\n`);
+  const text = execFileSync('node', ['--no-warnings', BIN, 'context', 'zzNeedleInside', '--budget', '400'], { cwd: repo, env, encoding: 'utf8' });
+  assert.match(text, /zzNeedleInside/);
+  assert.ok(text.length < 400 * 6, `expected a clipped window, got ${text.length} chars`);
+});

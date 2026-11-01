@@ -14,3 +14,4 @@ coverage/
 weft.db*
 .test-tmp/
 dist-next/
+dist-old/
