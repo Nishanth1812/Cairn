@@ -35,6 +35,7 @@ import { runRetrievalBenchmark } from '../../bench/retrieval.js';
 import { ensureRepoOnboarded, indexWithinLimit } from '../../onboarding/auto.js';
 import { refreshIndex } from '../../indexer/refresh.js';
 import { formatContext, formatSearch } from '../format.js';
+import { onboardWorkspace } from '../../onboarding/workspace.js';
 import { runVerification } from '../../verification/runner.js';
 import { suggestChecks } from '../../verification/suggest.js';
 import { recordVerification } from '../../memory/taskManager.js';
@@ -258,8 +259,20 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       let repo: ReturnType<typeof repoRow>;
       try { repo = repoRow(db, repoArg); } catch (error) {
         // An unregistered git checkout (a new clone or worktree) is registered and indexed on first use instead of failing.
-        if (repoArg || !(await ensureRepoOnboarded(process.cwd(), { spawnIndex: false })).onboarded) throw error;
-        repo = repoRow(db, undefined);
+        if (repoArg) throw error;
+        const onboarding = await ensureRepoOnboarded(process.cwd(), { spawnIndex: false });
+        // A plain folder that holds repos (a workspace): use its only repo, or list them so the agent can name one.
+        let childId: string | undefined;
+        if ('reason' in onboarding && onboarding.reason === 'not-git') {
+          const children = await onboardWorkspace(db, process.cwd(), { spawnIndex: false });
+          if (children.length > 1) {
+            await onboardWorkspace(db, process.cwd()); // index them in the background so the retry is ready
+            fail(`${process.cwd()} holds ${children.length} repos: ${children.map((child) => child.name).join(', ')}. Run again with one as the last argument, e.g. cairn waymark ${group} "${query}" ${children[0]!.name}`, 3);
+          }
+          childId = children[0]?.id;
+        }
+        if (!onboarding.onboarded && !childId) throw error;
+        repo = repoRow(db, childId);
         const note = await indexWithinLimit(repo.root_path, (await loadConfig()).maxTrackedFiles, db, repo.id);
         if (note) fail(note, 3);
       }
