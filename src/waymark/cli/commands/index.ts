@@ -34,6 +34,7 @@ import { checkIntegrations } from '../../integrations/doctor.js';
 import { runRetrievalBenchmark } from '../../bench/retrieval.js';
 import { ensureRepoOnboarded, indexWithinLimit } from '../../onboarding/auto.js';
 import { refreshIndex } from '../../indexer/refresh.js';
+import { formatContext, formatSearch } from '../format.js';
 import { runVerification } from '../../verification/runner.js';
 import { suggestChecks } from '../../verification/suggest.js';
 import { recordVerification } from '../../memory/taskManager.js';
@@ -267,17 +268,19 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       // Same key format the PreToolUse hook uses ("<session_id>-<agent_id>"); the agent id is not in the env, so subagents count under their session.
       const sessionId = process.env.CLAUDE_CODE_SESSION_ID;
       const session = sessionId ? `${sessionId}-` : null;
-      const respond = (data: unknown): Result => {
-        try { recordToolCall(db, { repoId: repo.id, tool: group, session, returnedTokens: estimateTokens(JSON.stringify(data)), ms: null, query: redactSafe(query) }); } catch { /* Telemetry must not interrupt the session. */ }
+      // `shown` is the text the CLI prints (formatSearch/formatContext), not the full JSON payload, which is ~10x larger for search.
+      const respond = <T>(data: T, shown: string): Result => {
+        try { recordToolCall(db, { repoId: repo.id, tool: group, session, returnedTokens: estimateTokens(shown), ms: null, query: redactSafe(query) }); } catch { /* Telemetry must not interrupt the session. */ }
         return { code: 0, data };
       };
       if (group === 'search') {
-        const hits = searchChunks(db, repo.id, query, requireCount(option(args, '--limit'), '--limit', 20));
-        return respond(rankCandidates(hits, query));
+        const hits = rankCandidates(searchChunks(db, repo.id, query, requireCount(option(args, '--limit'), '--limit', 20)), query);
+        return respond(hits, formatSearch(hits));
       }
       const results = rankCandidates(searchChunks(db, repo.id, query, 100), query);
       const contextHits = compactOutput ? results.filter((hit, index) => results.findIndex(other => other.path === hit.path) === index).slice(0, 2) : results;
-      return respond(packContext(contextHits, requireCount(option(args, '--budget'), '--budget', 1500), query));
+      const packed = packContext(contextHits, requireCount(option(args, '--budget'), '--budget', 1500), query);
+      return respond(packed, formatContext(packed.items));
     } finally { db.close(); }
   }
   if (group === 'task') {
@@ -335,9 +338,10 @@ export async function runCommand(args: string[], compactOutput = false): Promise
     const db = database(); try {
       const stats = getStats(db, duration(option(args, '--since')));
       return { code: 0, data: compactOutput
-        ? `Adoption: ${stats.adoption.percent == null ? 'no lookups yet' : `${stats.adoption.percent}%`} of lookups through Waymark (${stats.adoption.weftCalls} search/context, ${stats.adoption.nativeCalls} Read/Grep/Glob)
+        ? `Adoption: ${stats.adoption.percent == null ? 'no lookups yet' : `${stats.adoption.percent}%`} of lookups through Waymark (${stats.adoption.weftCalls} search/context, ${stats.adoption.nativeCalls} Grep/Glob/Bash search/whole-file Read)
 Waymark returned: ${stats.toolTokens.returned} tokens
-Prompt hook: ${stats.promptHook.injections} injections, ${stats.promptHook.returned} tokens`
+Prompt hook: ${stats.promptHook.injections} injections, ${stats.promptHook.returned} tokens
+Fell back to a sweep after a lookup: ${stats.quality.fallbackPercent == null ? 'n/a' : `${stats.quality.fallbackPercent}%`}; feedback filed: ${stats.quality.feedback.miss} miss, ${stats.quality.feedback.bad_output} bad output, ${stats.quality.feedback.error} error`
         : stats };
     } finally { db.close(); }
   }

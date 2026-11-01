@@ -7,8 +7,11 @@ Top-level fields:
 - `adoption` — `{ percent, weftCalls, nativeCalls }`
   - `percent` — share of code lookups that went through Waymark: `weftCalls / (weftCalls + nativeCalls)`, rounded; `null` when there were no lookups
   - `weftCalls` — `search` and `context` calls
-  - `nativeCalls` — `Read`, `Grep` and `Glob` calls. Counted before the hook's early returns, so ranged reads and the sweep the trial denies both count.
-- `toolTokens` — `{ calls, returned }` for `search` and `context`; `returned` is the estimated tokens of the output the agent received
+  - `nativeCalls` — sweeps only: `Grep`, `Glob`, grep/rg/find in Bash, and whole-file reads of large files. Counted before the hook's early returns, so a sweep the gate denies still counts. Ranged `Read`s are the intended follow-up to a search and are not counted.
+- `toolTokens` — `{ calls, returned }` for `search` and `context`; `returned` is the estimated tokens of the text the CLI prints (`formatSearch` / `formatContext`), not the larger `--json` payload
 - `promptHook` — `{ injections, returned }` for `hook_prompt`
+- `quality` — whether Waymark answered, from rows already written
+  - `fallbackPercent` — share of `search`/`context` calls (in a known session) after which the same session ran a sweep before its next Waymark lookup; `null` when there were none. Lower is better.
+  - `feedback` — `{ miss, bad_output, error }` counts from `cairn waymark feedback`
 
 Window: `--since` accepts a duration such as `1d`, `7d` or `30d`. Omitting it applies no time filter.
