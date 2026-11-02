@@ -4,6 +4,8 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { formatContext } from './format.js';
 import { redactDeep, redactSafe } from '../core/security/redactor.js';
+import { getUserPaths } from '../config/paths.js';
+import { isStorageError, storageFailure } from '../storage/storageErrors.js';
 
 export interface CliIo { stdout: (text: string) => void; stderr: (text: string) => void }
 export interface CliResult { code: number; data?: unknown; warnings?: string[]; errors?: string[]; status?: string }
@@ -55,8 +57,9 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = { stdout:
   else {
     try { result = await (await import('./commands/index.js')).runCommand(args, !parsed.json); }
     catch (error) {
-      const message = redactSafe(parsed.verbose && error instanceof Error ? error.stack ?? error.message : error instanceof Error ? error.message : String(error));
-      const explicitCode = Number((error as { exitCode?: number }).exitCode);
+      const reportedError = isStorageError(error) ? storageFailure(getUserPaths().state, error, 64 * 1024 * 1024) : error;
+      const message = redactSafe(parsed.verbose && reportedError instanceof Error && !isStorageError(reportedError) ? reportedError.stack ?? reportedError.message : reportedError instanceof Error ? reportedError.message : String(reportedError));
+      const explicitCode = Number((reportedError as { exitCode?: number }).exitCode);
       const code = explicitCode || (/migration checksum mismatch|integrity violation|database disk image is malformed/i.test(message) ? 6 : 1);
       result = { code, status: code === 2 ? 'invalid_arguments' : code === 3 ? 'missing_resource' : code === 5 ? 'cancelled' : code === 6 ? 'integrity_violation' : 'error', errors: [message] };
     }

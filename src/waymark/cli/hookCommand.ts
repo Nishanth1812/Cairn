@@ -19,8 +19,9 @@ async function readHookInput(timeoutMs = 150): Promise<HookInput> {
 
 // Kept apart from the command router so a hook only loads the modules it needs (every session start and stop pays this).
 export async function runHookCommand(event: string | undefined): Promise<{ code: number; data?: string }> {
+  const logFailure = async (error: unknown) => { try { await logHookFailure(hookStateDir(), error); } catch { /* Hooks must remain silent and successful when state storage is unavailable. */ } };
   try {
-    if (event !== 'session-start' && event !== 'user-prompt-submit' && event !== 'pre-tool-use' && event !== 'stop' && event !== 'pre-compact') { await logHookFailure(hookStateDir(), new Error(`Unknown hook event: ${event ?? ''}`)); return { code: 0 }; }
+    if (event !== 'session-start' && event !== 'user-prompt-submit' && event !== 'pre-tool-use' && event !== 'stop' && event !== 'pre-compact') { await logFailure(new Error(`Unknown hook event: ${event ?? ''}`)); return { code: 0 }; }
     // Claude Code sends the event payload as JSON on stdin; only the prompt hook needs it.
     const input: HookInput = event === 'user-prompt-submit' || event === 'pre-tool-use' ? await readHookInput() : {};
     if (event === 'session-start') prefetchGitState(process.cwd());
@@ -34,7 +35,7 @@ export async function runHookCommand(event: string | undefined): Promise<{ code:
       await runCheckpointHook({ stateDir: hookStateDir() });
       return '';
     }, 400);
-    if (data === undefined) await logHookFailure(hookStateDir(), new Error(`Hook timed out: ${event} in ${process.cwd()}${input.tool ? `, ${input.tool}` : ''}`));
+    if (data === undefined) await logFailure(new Error(`Hook timed out: ${event} in ${process.cwd()}${input.tool ? `, ${input.tool}` : ''}`));
     return { code: 0, data: data || undefined };
-  } catch (error) { await logHookFailure(hookStateDir(), error); return { code: 0 }; }
+  } catch (error) { await logFailure(error); return { code: 0 }; }
 }

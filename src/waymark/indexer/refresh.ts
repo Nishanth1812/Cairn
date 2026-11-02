@@ -122,7 +122,8 @@ export async function refreshIndex(db: Database.Database, repoId: string, root: 
   const prepared = {
     file: db.prepare('INSERT INTO files (repo_id, generation_id, path, content_hash, mtime_ms, size_bytes, language, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
     symbol: db.prepare('INSERT INTO symbols (file_id, name, kind, start_line, end_line) VALUES (?, ?, ?, ?, ?)'),
-    chunk: db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_text, path_text, symbol_text, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
+    chunk: db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_extra, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
+    meta: db.prepare('INSERT INTO file_search_meta(file_id, path_text, symbol_text) VALUES (?, ?, ?)'),
   };
   db.transaction(() => {
     const remove = db.prepare('DELETE FROM files WHERE id = ?');

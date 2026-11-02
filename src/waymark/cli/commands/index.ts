@@ -28,6 +28,7 @@ import { redactSafe } from '../../core/security/redactor.js';
 import { estimateTokens } from '../../core/estimate/tokenEstimator.js';
 import { migrateDevPulse } from '../../migration/devpulse/migrator.js';
 import { openDatabase, repairCorruptDatabase } from '../../storage/db.js';
+import { isStorageError, storageFailure } from '../../storage/storageErrors.js';
 import { migrate } from '../../storage/migrator.js';
 import type Database from 'better-sqlite3';
 import { checkIntegrations } from '../../integrations/doctor.js';
@@ -293,7 +294,8 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       const session = sessionId ? `${sessionId}-` : null;
       // Tokens are counted on what the agent receives: the printed text, or the JSON payload under --json.
       const respond = <T>(data: T, shown: string, found: Array<{ path: string }> = [], omitted = 0): Result => {
-        try { recordToolCall(db, { repoId: multi ? null : repos[0]!.id, tool: group, session, returnedTokens: estimateTokens(compactOutput ? shown : JSON.stringify(data)), ms: null, query: redactSafe(query), paths: multi ? undefined : [...new Set(found.map((item) => item.path))] }); } catch { /* Telemetry must not interrupt the session. */ }
+        try { recordToolCall(db, { repoId: multi ? null : repos[0]!.id, tool: group, session, returnedTokens: estimateTokens(compactOutput ? shown : JSON.stringify(data)), ms: null, query: redactSafe(query), paths: multi ? undefined : [...new Set(found.map((item) => item.path))] }); }
+        catch (error) { if (isStorageError(error)) throw storageFailure(paths.state, error, 64 * 1024); /* Other telemetry failures must not interrupt the session. */ }
         return { code: 0, data, ...(omitted ? { warnings: [`${omitted} more results omitted (raise --limit or --budget)`] } : {}) };
       };
       const limit = requireCount(option(args, '--limit'), '--limit', refsName ? 100 : 20);

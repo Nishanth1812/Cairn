@@ -12,7 +12,12 @@ export function splitIdentifier(name: string): string[] {
  * The index tokenizer cannot split `retryRequest`, so without this a search for "request" would miss it.
  */
 export function buildSearchText(text: string): string {
+  const extra = buildSearchExtra(text);
+  return extra ? `${text}\n${extra}` : text;
+}
+
+export function buildSearchExtra(text: string): string {
   const extra = new Set<string>();
   for (const [name] of text.matchAll(IDENTIFIER)) for (const part of splitIdentifier(name)) extra.add(part);
-  return extra.size ? `${text}\n${[...extra].join(' ').slice(0, MAX_EXTRA)}` : text;
+  return extra.size ? [...extra].join(' ').slice(0, MAX_EXTRA) : '';
 }

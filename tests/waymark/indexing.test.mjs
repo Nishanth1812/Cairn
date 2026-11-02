@@ -79,4 +79,88 @@ test('concurrent first lookups return a bounded indexing notice and share one in
   }
 });
 
+test('a failed full-disk index preserves the active generation and can be retried', () => {
+  const repo = mkdtempSync(join(base, 'index-full-repo-'));
+  const home = mkdtempSync(join(base, 'index-full-home-'));
+  const env = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: join(home, 'r'),
+    LOCALAPPDATA: join(home, 'l'),
+    XDG_CONFIG_HOME: join(home, 'c'),
+    XDG_STATE_HOME: join(home, 's'),
+    XDG_CACHE_HOME: join(home, 'k'),
+  };
+  try {
+    execFileSync('git', ['init', '--quiet', '--separate-git-dir', join(home, 'repo-git')], { cwd: repo });
+    mkdirSync(join(repo, 'src'));
+    writeFileSync(join(repo, 'src', 'entry.js'), 'export function firstDiskProbe() { return 1; }\n');
+    execFileSync('git', ['add', 'src'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'fixture'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('node', ['--no-warnings', cli, 'init'], { env, encoding: 'utf8' });
+    execFileSync('node', ['--no-warnings', cli, 'search', 'firstDiskProbe', '--json'], { cwd: repo, env, encoding: 'utf8' });
+
+    const dbPath = stateDbPath(home);
+    const db = new Database(dbPath);
+    let repoId;
+    let activeGeneration;
+    try {
+      repoId = db.prepare('SELECT id FROM repositories LIMIT 1').get().id;
+      activeGeneration = db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repoId).active_generation;
+      db.exec("CREATE TRIGGER simulate_disk_full BEFORE INSERT ON files BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END");
+    } finally { db.close(); }
+
+    writeFileSync(join(repo, 'src', 'entry.js'), 'export function firstDiskProbe() { return 2; }\nexport function retryDiskProbe() { return 3; }\n');
+    execFileSync('git', ['add', 'src'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'update'], { cwd: repo, stdio: 'ignore' });
+    let failure;
+    try { execFileSync('node', ['--no-warnings', cli, 'index', repoId, '--force'], { cwd: repo, env, encoding: 'utf8' }); }
+    catch (error) { failure = error; }
+    assert.ok(failure, 'indexing must fail when SQLite reports a full disk');
+    assert.notEqual(failure.status, 0);
+    const message = String(failure.stderr);
+    assert.match(message, /state directory/i);
+    assert.match(message, /free.*needed/i);
+    assert.match(message, /clean --scope indexes --yes/);
+    assert.match(message, /maxTrackedFiles/);
+
+    const check = new Database(dbPath);
+    try {
+      assert.equal(check.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repoId).active_generation, activeGeneration);
+      assert.equal(check.prepare("SELECT COUNT(*) AS n FROM index_generations WHERE repo_id = ? AND status = 'building'").get(repoId).n, 0);
+      const chunkColumns = check.pragma('table_info(chunks)').map(({ name }) => name);
+      assert.ok(chunkColumns.includes('safe_text'));
+      assert.ok(chunkColumns.includes('search_extra'));
+      assert.ok(!chunkColumns.some((name) => ['search_text', 'path_text', 'symbol_text'].includes(name)));
+      assert.equal(check.prepare('SELECT COUNT(*) AS n FROM file_search_meta').get().n, check.prepare('SELECT COUNT(*) AS n FROM files').get().n);
+      check.exec('DROP TRIGGER simulate_disk_full');
+    } finally { check.close(); }
+
+    execFileSync('node', ['--no-warnings', cli, 'index', repoId, '--force'], { cwd: repo, env, encoding: 'utf8' });
+    const retried = JSON.parse(execFileSync('node', ['--no-warnings', cli, 'search', 'retryDiskProbe', '--json'], { cwd: repo, env, encoding: 'utf8' }));
+    assert.equal(retried.ok, true);
+    assert.match(JSON.stringify(retried.data), /entry\.js/);
+
+    const telemetry = new Database(dbPath);
+    try { telemetry.exec("CREATE TRIGGER simulate_telemetry_full BEFORE INSERT ON tool_calls BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END"); }
+    finally { telemetry.close(); }
+    let telemetryFailure;
+    try { execFileSync('node', ['--no-warnings', cli, 'search', 'retryDiskProbe', '--json'], { cwd: repo, env, encoding: 'utf8' }); }
+    catch (error) { telemetryFailure = error; }
+    assert.ok(telemetryFailure);
+    assert.notEqual(telemetryFailure.status, 0);
+    assert.match(String(telemetryFailure.stdout), /state directory.*free.*needed/i);
+    assert.match(String(telemetryFailure.stdout), /clean --scope indexes --yes/);
+
+    const hook = execFileSync('node', ['--no-warnings', cli, 'hook', 'user-prompt-submit'], {
+      cwd: repo, env, encoding: 'utf8', input: JSON.stringify({ prompt: 'retryDiskProbe', cwd: repo }),
+    });
+    assert.doesNotMatch(hook, /SqliteError|SQLITE_FULL|database or disk is full|stack/i);
+  } finally {
+    rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
 

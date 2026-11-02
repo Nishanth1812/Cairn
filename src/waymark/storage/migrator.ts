@@ -167,7 +167,43 @@ INSERT INTO chunk_fts(chunk_fts) VALUES('rebuild');
 const v10 = `
 CREATE INDEX idx_edges_target_symbol ON edges(target_symbol_id);
 `;
-const migrations = [{ version: 1, sql: v1 }, { version: 2, sql: v2 }, { version: 3, sql: v3 }, { version: 4, sql: v4 }, { version: 5, sql: v5 }, { version: 6, sql: v6 }, { version: 7, sql: v7 }, { version: 8, sql: v8 }, { version: 9, sql: v9 }, { version: 10, sql: v10 }];
+// The FTS source view stores file search text once per file; FTS keeps only postings and reads chunk text on demand.
+const v11 = `
+DROP TRIGGER chunks_ai; DROP TRIGGER chunks_ad; DROP TRIGGER chunks_au;
+DROP TABLE chunk_fts;
+CREATE TABLE file_search_meta (
+  file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+  path_text TEXT NOT NULL, symbol_text TEXT NOT NULL
+);
+INSERT INTO file_search_meta(file_id, path_text, symbol_text)
+  SELECT file_id, MAX(path_text), MAX(symbol_text) FROM chunks GROUP BY file_id;
+ALTER TABLE chunks ADD COLUMN search_extra TEXT NOT NULL DEFAULT '';
+UPDATE chunks SET search_extra = substr(search_text, length(safe_text) + 2)
+  WHERE substr(search_text, 1, length(safe_text) + 1) = safe_text || char(10);
+ALTER TABLE chunks DROP COLUMN search_text;
+ALTER TABLE chunks DROP COLUMN path_text;
+ALTER TABLE chunks DROP COLUMN symbol_text;
+CREATE VIEW chunk_fts_content AS
+  SELECT c.id, m.path_text, m.symbol_text,
+    c.safe_text || CASE WHEN c.search_extra = '' THEN '' ELSE char(10) || c.search_extra END AS search_text
+  FROM chunks c JOIN file_search_meta m ON m.file_id = c.file_id;
+CREATE VIRTUAL TABLE chunk_fts USING fts5(
+  path_text, symbol_text, search_text, content='chunk_fts_content', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2'
+);
+INSERT INTO chunk_fts(chunk_fts) VALUES('rebuild');
+CREATE TRIGGER chunks_ai AFTER INSERT ON chunks BEGIN
+  INSERT INTO chunk_fts(rowid, path_text, symbol_text, search_text)
+    SELECT new.id, m.path_text, m.symbol_text, new.safe_text || CASE WHEN new.search_extra = '' THEN '' ELSE char(10) || new.search_extra END
+    FROM file_search_meta m WHERE m.file_id = new.file_id;
+END;
+CREATE TRIGGER files_bd BEFORE DELETE ON files BEGIN
+  INSERT INTO chunk_fts(chunk_fts, rowid, path_text, symbol_text, search_text)
+    SELECT 'delete', c.id, m.path_text, m.symbol_text, c.safe_text || CASE WHEN c.search_extra = '' THEN '' ELSE char(10) || c.search_extra END
+    FROM chunks c JOIN file_search_meta m ON m.file_id = c.file_id WHERE c.file_id = old.id;
+  DELETE FROM file_search_meta WHERE file_id = old.id;
+END;
+`;
+const migrations = [{ version: 1, sql: v1 }, { version: 2, sql: v2 }, { version: 3, sql: v3 }, { version: 4, sql: v4 }, { version: 5, sql: v5 }, { version: 6, sql: v6 }, { version: 7, sql: v7 }, { version: 8, sql: v8 }, { version: 9, sql: v9 }, { version: 10, sql: v10 }, { version: 11, sql: v11 }];
 const checksum = (sql: string) => createHash('sha256').update(sql).digest('hex');
 
 export function migrate(db: Database.Database, now: () => string = () => new Date().toISOString()): number[] {
@@ -198,6 +234,10 @@ export function migrate(db: Database.Database, now: () => string = () => new Dat
         .run(migration.version, now(), checksum(migration.sql));
     }).immediate();
     ran.push(migration.version);
+  }
+  if (ran.includes(11)) {
+    db.pragma('wal_checkpoint(TRUNCATE)');
+    db.exec('VACUUM');
   }
   return ran;
 }

@@ -3,20 +3,22 @@ import { randomUUID } from 'node:crypto';
 import { readFile, rm, stat } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { dirname } from 'node:path';
 import { orderedFingerprint } from '../core/fingerprint/hasher.js';
+import { freeSpaceBytes, isStorageError, storageFailure } from '../storage/storageErrors.js';
 import { detectLanguage, extractSymbols } from './symbols.js';
 import { chunkText } from './chunker.js';
-import { buildSearchText } from './searchText.js';
+import { buildSearchExtra, buildSearchText } from './searchText.js';
 import { walkRepository, type CandidateFile, type PreviousFile } from './walker.js';
 
 export interface IndexSummary {
   generationId: number; files: number; symbols: number; chunks: number; reusedFiles: number; warnings: number;
 }
 
-type StoreStatements = { file: Database.Statement; symbol: Database.Statement; chunk: Database.Statement };
+type StoreStatements = { file: Database.Statement; symbol: Database.Statement; chunk: Database.Statement; meta: Database.Statement };
 
 // Bump when what is stored per file changes (symbol rules, chunking): refreshIndex then rebuilds every repo on its next lookup.
-export const INDEX_SCHEMA_VERSION = 6;
+export const INDEX_SCHEMA_VERSION = 7;
 
 export async function indexRepository(
   db: Database.Database, repoId: string, repoRoot: string, options: { force?: boolean } = {},
@@ -35,6 +37,7 @@ export async function indexRepository(
       writeFileSync(lockPath, JSON.stringify({ pid: process.pid, at: Date.now(), token }), { flag: 'wx' });
       acquired = true;
     } catch (error) {
+      if (isStorageError(error)) { await rm(lockPath, { force: true }).catch(() => undefined); throw storageFailure(dirname(db.name), error, 64 * 1024 * 1024); }
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       const lock = await read();
       if (!lock) { // Unreadable: either still being written or damaged. Only a damaged one older than 5 s is removed.
@@ -51,6 +54,7 @@ export async function indexRepository(
     }
   }
   try { return await indexRepositoryLocked(db, repoId, repoRoot, options); }
+  catch (error) { if (isStorageError(error)) throw storageFailure(dirname(db.name), error, 64 * 1024 * 1024); throw error; }
   finally { await removeIf(token); }
 }
 
@@ -78,51 +82,71 @@ async function indexRepositoryLocked(
     }
   }
 
-  db.prepare('DELETE FROM index_generations WHERE repo_id = ? AND status IN (\'building\', \'failed\') AND id != COALESCE(?, -1)').run(repoId, activeId);
-  const generationId = Number(db.prepare('INSERT INTO index_generations (repo_id, fingerprint, status, started_at) VALUES (?, ?, \'building\', ?)').run(repoId, fingerprint, now).lastInsertRowid);
+  const candidateBytes = candidates.reduce((sum, file) => sum + file.sizeBytes, 0);
+  const previousBytes = activeId === null ? 0 : (db.prepare('SELECT COALESCE(SUM(size_bytes), 0) AS bytes FROM files WHERE generation_id = ?').get(activeId) as { bytes: number }).bytes;
+  const chunkColumns = new Set((db.pragma('table_info(chunks)') as Array<{ name: string }>).map(({ name }) => name));
+  const storedTextColumns = ['safe_text', 'search_text', 'path_text', 'symbol_text'].filter((column) => chunkColumns.has(column));
+  const textBytes = activeId === null ? 0 : (db.prepare(`SELECT COALESCE(SUM(${storedTextColumns.map((column) => `length(${column})`).join(' + ')}), 0) AS bytes FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.generation_id = ?`).get(activeId) as { bytes: number }).bytes;
+  const observedRatio = previousBytes ? Math.max(6, textBytes / previousBytes) : 10;
+  const estimatedBytes = Math.max(64 * 1024 * 1024, Math.ceil(candidateBytes * observedRatio + candidates.length * 32 * 1024));
+  if (db.name !== ':memory:') {
+    const stateDir = dirname(db.name), availableBytes = freeSpaceBytes(stateDir);
+    if (availableBytes < estimatedBytes) throw storageFailure(stateDir, new Error('estimated index space exceeds available disk space'), estimatedBytes, availableBytes);
+  }
+
   const insertFile = db.prepare('INSERT INTO files (repo_id, generation_id, path, content_hash, mtime_ms, size_bytes, language, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
   const insertSymbol = db.prepare('INSERT INTO symbols (file_id, name, kind, start_line, end_line) VALUES (?, ?, ?, ?, ?)');
-  const insertChunk = db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_text, path_text, symbol_text, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-  const storeStatements = { file: insertFile, symbol: insertSymbol, chunk: insertChunk };
+  const insertChunk = db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_extra, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+  const insertFileMeta = db.prepare('INSERT INTO file_search_meta(file_id, path_text, symbol_text) VALUES (?, ?, ?)');
+  const storeStatements = { file: insertFile, symbol: insertSymbol, chunk: insertChunk, meta: insertFileMeta };
   const selectSymbols = db.prepare('SELECT name, kind, start_line, end_line FROM symbols WHERE file_id = ?');
-  const selectChunks = db.prepare('SELECT ordinal, start_line, end_line, content_hash, safe_text, search_text, path_text, symbol_text, token_estimate FROM chunks WHERE file_id = ?');
-  const chunkTriggers = db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'chunks'").all() as Array<{ name: string; sql: string }>;
+  const selectChunks = db.prepare('SELECT ordinal, start_line, end_line, content_hash, safe_text, search_extra, token_estimate FROM chunks WHERE file_id = ?');
+  const selectFileMeta = db.prepare('SELECT path_text, symbol_text FROM file_search_meta WHERE file_id = ?');
+  const chunkInsertTrigger = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'chunks_ai'").get() as { sql: string } | undefined;
   let symbolCount = 0;
   let chunkCount = 0;
+  let generationId = -1;
   try {
-    db.transaction(() => {
-      for (const trigger of chunkTriggers) db.exec(`DROP TRIGGER "${trigger.name.replaceAll('"', '""')}"`);
+    generationId = db.transaction(() => {
+      db.prepare('DELETE FROM index_generations WHERE repo_id = ? AND status IN (\'building\', \'failed\') AND id != COALESCE(?, -1)').run(repoId, activeId);
+      const buildingId = Number(db.prepare('INSERT INTO index_generations (repo_id, fingerprint, status, started_at) VALUES (?, ?, \'building\', ?)').run(repoId, fingerprint, now).lastInsertRowid);
+      if (chunkInsertTrigger) db.exec('DROP TRIGGER chunks_ai');
       for (const file of candidates) {
         if (!file.unchanged) {
-          const stored = storeFile(db, repoId, generationId, file, now, storeStatements);
+          const stored = storeFile(db, repoId, buildingId, file, now, storeStatements);
           symbolCount += stored.symbols;
           chunkCount += stored.chunks;
           continue;
         }
         const language = file.language ?? detectLanguage(file.path);
-        const fileId = Number(insertFile.run(repoId, generationId, file.path, file.contentHash, Math.round(file.mtimeMs), file.sizeBytes, language ?? null, now).lastInsertRowid);
+        const fileId = Number(insertFile.run(repoId, buildingId, file.path, file.contentHash, Math.round(file.mtimeMs), file.sizeBytes, language ?? null, now).lastInsertRowid);
         const old = previousByPath.get(file.path)!;
         const symbols = selectSymbols.all(old.id) as Array<{ name: string; kind: string; start_line: number; end_line: number }>;
-        const chunks = selectChunks.all(old.id) as Array<{ ordinal: number; start_line: number; end_line: number; content_hash: string; safe_text: string; search_text: string; path_text: string; symbol_text: string; token_estimate: number }>;
+        const chunks = selectChunks.all(old.id) as Array<{ ordinal: number; start_line: number; end_line: number; content_hash: string; safe_text: string; search_extra: string; token_estimate: number }>;
         for (const symbol of symbols) insertSymbol.run(fileId, symbol.name, symbol.kind, symbol.start_line, symbol.end_line);
-        for (const chunk of chunks) insertChunk.run(fileId, chunk.ordinal, chunk.start_line, chunk.end_line, chunk.content_hash, chunk.safe_text, chunk.search_text, chunk.path_text, chunk.symbol_text, chunk.token_estimate);
+        const meta = selectFileMeta.get(old.id) as { path_text: string; symbol_text: string };
+        insertFileMeta.run(fileId, meta.path_text, meta.symbol_text);
+        for (const chunk of chunks) {
+          insertChunk.run(fileId, chunk.ordinal, chunk.start_line, chunk.end_line, chunk.content_hash, chunk.safe_text, chunk.search_extra, chunk.token_estimate);
+        }
         symbolCount += symbols.length;
         chunkCount += chunks.length;
       }
-      populateReferenceEdges(db, generationId);
-      if (chunkTriggers.length) {
-        db.prepare("INSERT INTO chunk_fts(chunk_fts) VALUES('rebuild')").run();
-        for (const trigger of chunkTriggers) db.exec(trigger.sql);
-      }
-      db.prepare('UPDATE index_generations SET status = \'ready\', completed_at = ? WHERE id = ?').run(new Date().toISOString(), generationId);
-      db.prepare('INSERT INTO repo_index_state (repo_id, active_generation, schema_version, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(repo_id) DO UPDATE SET active_generation = excluded.active_generation, schema_version = excluded.schema_version, updated_at = excluded.updated_at').run(repoId, generationId, INDEX_SCHEMA_VERSION, new Date().toISOString());
+      db.prepare("INSERT INTO chunk_fts(chunk_fts) VALUES('rebuild')").run();
+      if (chunkInsertTrigger) db.exec(chunkInsertTrigger.sql);
+      populateReferenceEdges(db, buildingId);
+      db.prepare('UPDATE index_generations SET status = \'ready\', completed_at = ? WHERE id = ?').run(new Date().toISOString(), buildingId);
+      db.prepare('INSERT INTO repo_index_state (repo_id, active_generation, schema_version, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(repo_id) DO UPDATE SET active_generation = excluded.active_generation, schema_version = excluded.schema_version, updated_at = excluded.updated_at').run(repoId, buildingId, INDEX_SCHEMA_VERSION, new Date().toISOString());
+      db.prepare('DELETE FROM index_generations WHERE repo_id = ? AND id != ?').run(repoId, buildingId);
+      return buildingId;
     }).immediate();
   } catch (error) {
-    db.prepare('DELETE FROM index_generations WHERE id = ?').run(generationId);
+    if (isStorageError(error)) throw storageFailure(dirname(db.name), error, estimatedBytes);
     throw error;
   }
-  // Each index copies every file row, so keeping superseded generations multiplies the database size (the index is rebuildable; telemetry is untouched).
-  try { db.prepare('DELETE FROM index_generations WHERE repo_id = ? AND id != ?').run(repoId, generationId); } catch { /* A busy reader must not fail the index. */ }
+  // A checkpoint can fail after the index is committed; the next build can retry it.
+  try { db.pragma('wal_checkpoint(TRUNCATE)'); }
+  catch { /* A later build retries the checkpoint. */ }
   return { generationId, files: candidates.length, symbols: symbolCount, chunks: chunkCount, reusedFiles: candidates.filter(({ unchanged }) => unchanged).length, warnings };
 }
 
@@ -131,7 +155,8 @@ export function storeFile(db: Database.Database, repoId: string, generationId: n
   const statements = prepared ?? {
     file: db.prepare('INSERT INTO files (repo_id, generation_id, path, content_hash, mtime_ms, size_bytes, language, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
     symbol: db.prepare('INSERT INTO symbols (file_id, name, kind, start_line, end_line) VALUES (?, ?, ?, ?, ?)'),
-    chunk: db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_text, path_text, symbol_text, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
+    chunk: db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_extra, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
+    meta: db.prepare('INSERT INTO file_search_meta(file_id, path_text, symbol_text) VALUES (?, ?, ?)'),
   };
   const language = file.language ?? detectLanguage(file.path);
   const fileId = Number(statements.file.run(repoId, generationId, file.path, file.contentHash, Math.round(file.mtimeMs), file.sizeBytes, language ?? null, now).lastInsertRowid);
@@ -140,9 +165,13 @@ export function storeFile(db: Database.Database, repoId: string, generationId: n
   const chunks = chunkText(file.content, symbols);
   const pathText = buildSearchText(file.path);
   const symbolText = buildSearchText(symbols.map(({ name }) => name).join(' '));
-  for (const chunk of chunks) statements.chunk.run(fileId, chunk.ordinal, chunk.startLine, chunk.endLine, chunk.contentHash, chunk.safeText, buildSearchText(chunk.safeText), pathText, symbolText, chunk.tokenEstimate);
+  statements.meta.run(fileId, pathText, symbolText);
+  for (const chunk of chunks) {
+    statements.chunk.run(fileId, chunk.ordinal, chunk.startLine, chunk.endLine, chunk.contentHash, chunk.safeText, buildSearchExtra(chunk.safeText), chunk.tokenEstimate);
+  }
   return { symbols: symbols.length, chunks: chunks.length };
 }
+
 
 function populateReferenceEdges(db: Database.Database, generationId: number): void {
   const symbols = db.prepare('SELECT s.id, s.file_id AS fileId, s.name, s.start_line AS startLine, s.end_line AS endLine FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.generation_id = ? ORDER BY f.path, s.start_line').all(generationId) as Array<{ id: number; fileId: number; name: string; startLine: number; endLine: number }>;

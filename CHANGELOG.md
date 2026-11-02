@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- FTS search no longer stores per-chunk copies of search text and symbol names; indexing estimates free space, reports storage failures clearly, and rolls back failed generations.
 - `search --refs <symbol>` lists individual import, re-export, call, and module-level sites grouped by file and enclosing symbol; capped lookup modes report omitted result counts. Reference matching uses identifier spelling, so same-name collisions can add results.
 
 ## 0.1.1
