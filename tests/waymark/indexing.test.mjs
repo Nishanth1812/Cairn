@@ -27,11 +27,13 @@ test('concurrent first lookups return a bounded indexing notice and share one in
     CAIRN_INDEX_WAIT_MS: '1',
   };
   try {
-    execFileSync('git', ['init', '--quiet'], { cwd: repo });
+    execFileSync('git', ['init', '--quiet', '--separate-git-dir', join(home, 'repo-git')], { cwd: repo });
     mkdirSync(join(repo, 'src'));
     for (let i = 0; i < 300; i++) {
       writeFileSync(join(repo, 'src', `module-${i}.js`), `export function indexedNeedle${i}() { return ${i}; }\n`);
     }
+    execFileSync('git', ['add', 'src'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'fixture'], { cwd: repo, stdio: 'ignore' });
     execFileSync('node', ['--no-warnings', cli, 'init'], { env, encoding: 'utf8' });
     const started = Date.now();
     const results = await Promise.all([1, 2].map(() => exec('node', ['--no-warnings', cli, 'search', 'indexedNeedle', '--json'], { cwd: repo, env, encoding: 'utf8', windowsHide: true })));

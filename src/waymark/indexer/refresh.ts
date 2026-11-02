@@ -1,13 +1,15 @@
 import type Database from 'better-sqlite3';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { INDEX_SCHEMA_VERSION, indexRepository, storeFile } from './indexer.js';
 import { readCandidate } from './walker.js';
 
 const PATCH_LIMIT = 200;
+const run = promisify(execFile);
 
 export type Refresh = 'fresh' | 'patched' | 'reindexed' | 'none';
 
@@ -18,7 +20,7 @@ function alive(pid: number | undefined): boolean {
   try { process.kill(pid!, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
 }
 
-function startBackgroundIndex(db: Database.Database, repoId: string, root: string): void {
+function startBackgroundIndex(db: Database.Database, repoId: string): void {
   if (db.name === ':memory:' || !process.argv[1] || !existsSync(process.argv[1])) return;
   const id = createHash('sha1').update(repoId).digest('hex');
   const writerLock = `${db.name}.${id}.index.lock`;
@@ -40,7 +42,7 @@ function startBackgroundIndex(db: Database.Database, repoId: string, root: strin
     }
   }
   try {
-    const child = spawn(process.execPath, [process.argv[1]!, 'index', repoId], { cwd: root, detached: true, stdio: 'ignore', windowsHide: true });
+    const child = spawn(process.execPath, [process.argv[1]!, 'index', repoId], { cwd: dirname(resolve(process.argv[1]!)), detached: true, stdio: 'ignore', windowsHide: true });
     child.once('error', () => rmSync(backgroundLock, { force: true }));
     if (child.pid) writeFileSync(backgroundLock, JSON.stringify({ pid: child.pid, at: Date.now() }));
     child.unref();
@@ -51,7 +53,7 @@ function startBackgroundIndex(db: Database.Database, repoId: string, root: strin
 }
 
 async function awaitIndex(db: Database.Database, repoId: string, root: string): Promise<void> {
-  startBackgroundIndex(db, repoId, root);
+  startBackgroundIndex(db, repoId);
   const configured = Number(process.env.CAIRN_INDEX_WAIT_MS ?? 10_000);
   const waitMs = Number.isFinite(configured) ? Math.max(0, Math.min(60_000, configured)) : 10_000;
   const deadline = Date.now() + waitMs;
@@ -81,6 +83,13 @@ export async function refreshIndex(db: Database.Database, repoId: string, root: 
     await awaitIndex(db, repoId, root);
     return 'reindexed';
   }
+  try {
+    const { stdout } = await run('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: root, timeout: 1_500, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
+    if (!stdout) {
+      db.prepare('UPDATE index_generations SET completed_at = ? WHERE id = ?').run(new Date().toISOString(), generation);
+      return 'fresh';
+    }
+  } catch { /* A slow, missing or non-Git executable falls back to file stats. */ }
   const rows = db.prepare('SELECT id, path, mtime_ms AS mtimeMs, size_bytes AS sizeBytes FROM files WHERE generation_id = ?').all(generation) as Array<{ id: number; path: string; mtimeMs: number; sizeBytes: number }>;
   const completed = db.prepare('SELECT completed_at AS at FROM index_generations WHERE id = ?').get(generation) as { at: string | null } | undefined;
   const builtAt = completed?.at ? Date.parse(completed.at) : 0;
