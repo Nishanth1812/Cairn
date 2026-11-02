@@ -23,7 +23,7 @@ export async function runHookCommand(event: string | undefined): Promise<{ code:
     if (event !== 'session-start' && event !== 'user-prompt-submit' && event !== 'pre-tool-use' && event !== 'stop' && event !== 'pre-compact') { await logHookFailure(hookStateDir(), new Error(`Unknown hook event: ${event ?? ''}`)); return { code: 0 }; }
     // Claude Code sends the event payload as JSON on stdin; only the prompt hook needs it.
     const input: HookInput = event === 'user-prompt-submit' || event === 'pre-tool-use' ? await readHookInput() : {};
-    if (event !== 'user-prompt-submit' && event !== 'pre-tool-use') prefetchGitState(process.cwd());
+    if (event === 'session-start') prefetchGitState(process.cwd());
     const data = await runHookSafely(async () => {
       if (event === 'pre-tool-use') return (await import('../hooks/prompt.js')).runReadNudge({ stateDir: hookStateDir(), cwd: input.cwd, filePath: input.filePath, ranged: input.ranged, tool: input.tool, command: input.command, session: input.session });
       if (event === 'user-prompt-submit') return (await import('../hooks/prompt.js')).runPromptHook({ stateDir: hookStateDir(), cwd: input.cwd, prompt: input.prompt ?? '' });
