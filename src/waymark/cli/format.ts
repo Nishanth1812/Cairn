@@ -53,3 +53,18 @@ export function formatSymbols(hits: SymbolHit[], total: number): string {
   if (total > hits.length) lines.push(`... ${total - hits.length} more (raise --limit or --budget)`);
   return lines.join('\n');
 }
+
+export function formatReferences(hits: Array<{ path: string; line: number; groupName: string; referenceKind: string }>, total: number): string {
+  const groups = new Map<string, typeof hits>();
+  for (const hit of hits) { const key = `${hit.path}\0${hit.groupName}`; const rows = groups.get(key) ?? []; rows.push(hit); groups.set(key, rows); }
+  const lines: string[] = [];
+  let file = '';
+  for (const rows of groups.values()) {
+    const first = rows[0]!;
+    if (file !== first.path) { file = first.path; lines.push(file); }
+    lines.push(`  ${first.groupName}`);
+    for (const hit of rows) lines.push(`    ${hit.path}:${hit.line} [${hit.referenceKind}]`);
+  }
+  if (total > hits.length) lines.push(`... ${total - hits.length} more reference sites (raise --limit or --budget)`);
+  return lines.join('\n');
+}

@@ -93,8 +93,65 @@ test('large symbol chunks stay within 60 lines and retain their symbol name', ()
 
 test('search --refs lists the indexed caller of a symbol', () => {
   const rows = JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'search', '--refs', 'computeInvoiceTotal', '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
-  assert.deepEqual(rows.map((row) => row.path), ['src/report.js']);
-  assert.equal(rows[0].name, 'monthly');
+  assert.deepEqual(rows.map((row) => row.referenceKind), ['import', 'call']);
+  assert.equal(rows[1].name, 'monthly');
+});
+
+test('search --refs lists imports, re-exports, calls, and module-level sites by line', () => {
+  writeFileSync(join(repo, 'src', 'impact-target.js'), 'export function impactTarget() {}\n');
+  writeFileSync(join(repo, 'src', 'impact-sites.js'), [
+    "import { impactTarget } from './impact-target.js';",
+    "export { impactTarget } from './impact-target.js';",
+    "export * from './impact-target.js';",
+    'const topLevel = impactTarget();',
+    'export function inner() { return impactTarget(); }',
+    '// impactTarget() is only documentation',
+    'const text = "impactTarget()";',
+  ].join('\n') + '\n');
+  const rows = JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'search', '--refs', 'impactTarget', '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
+  assert.deepEqual(rows.map(({ path, line, referenceKind, groupName }) => ({ path, line, referenceKind, groupName })), [
+    { path: 'src/impact-sites.js', line: 1, referenceKind: 'import', groupName: 'module level' },
+    { path: 'src/impact-sites.js', line: 2, referenceKind: 're-export', groupName: 'module level' },
+    { path: 'src/impact-sites.js', line: 3, referenceKind: 're-export', groupName: 'module level' },
+    { path: 'src/impact-sites.js', line: 5, referenceKind: 'call', groupName: 'inner' },
+    { path: 'src/impact-sites.js', line: 4, referenceKind: 'call', groupName: 'topLevel' },
+  ]);
+  const output = execFileSync('node', ['--no-warnings', BIN, 'search', '--refs', 'impactTarget'], { cwd: repo, env, encoding: 'utf8' });
+  assert.match(output, /src\/impact-sites\.js/);
+  assert.match(output, /src\/impact-sites\.js:3.*re-export/);
+});
+
+test('search --refs recognizes type imports and named or wildcard type re-exports', () => {
+  writeFileSync(join(repo, 'src', 'impact-types.ts'), 'export interface ImpactType {}\n');
+  writeFileSync(join(repo, 'src', 'impact-type-sites.ts'), [
+    "import type { ImpactType } from './impact-types.js';",
+    "export type { ImpactType } from './impact-types.js';",
+    "export type * from './impact-types.js';",
+  ].join('\n') + '\n');
+  const rows = JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'search', '--refs', 'ImpactType', '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
+  assert.deepEqual(rows.map(({ line, referenceKind }) => ({ line, referenceKind })), [
+    { line: 1, referenceKind: 'import' },
+    { line: 2, referenceKind: 're-export' },
+    { line: 3, referenceKind: 're-export' },
+  ]);
+});
+
+test('search --refs reports how many sites --limit and --budget omit', () => {
+  const limited = execFileSync('node', ['--no-warnings', BIN, 'search', '--refs', 'impactTarget', '--limit', '2'], { cwd: repo, env, encoding: 'utf8' });
+  assert.match(limited, /\.\.\. 3 more reference sites/);
+  const budget = execFileSync('node', ['--no-warnings', BIN, 'search', '--refs', 'impactTarget', '--budget', '1'], { cwd: repo, env, encoding: 'utf8' });
+  assert.match(budget, /\.\.\. 4 more reference sites/);
+  const json = JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'search', '--refs', 'impactTarget', '--limit', '2', '--json'], { cwd: repo, env, encoding: 'utf8' }));
+  assert.deepEqual(json.warnings, ['3 more results omitted (raise --limit or --budget)']);
+});
+
+test('ranked search and --kind report items omitted by --limit', () => {
+  const ranked = execFileSync('node', ['--no-warnings', BIN, 'search', 'invoice', '--limit', '1'], { cwd: repo, env, encoding: 'utf8' });
+  assert.match(ranked, /\.\.\. \d+ more results/);
+  const kind = execFileSync('node', ['--no-warnings', BIN, 'search', '--kind', 'function', '*', '--limit', '1'], { cwd: repo, env, encoding: 'utf8' });
+  assert.match(kind, /\.\.\. \d+ more/);
+  const budget = execFileSync('node', ['--no-warnings', BIN, 'search', 'invoice', '--budget', '1'], { cwd: repo, env, encoding: 'utf8' });
+  assert.match(budget, /\.\.\. \d+ more results/);
 });
 
 test('--version reports the version in package.json', () => {

@@ -11,7 +11,7 @@ import { checkRepoHealth, type HealthReport } from '../../health/healthChecker.j
 import { generatePortfolioSummary } from '../../health/portfolio.js';
 import { indexRepository } from '../../indexer/indexer.js';
 import { packContext } from '../../context/packer.js';
-import { searchChunks, searchReferences } from '../../context/search.js';
+import { countSearchFiles, searchChunks, searchReferences } from '../../context/search.js';
 import { rankCandidates } from '../../context/ranker.js';
 import { parseIntent, generateDefaultIntent } from '../../core/intents/intentParser.js';
 import { getGitRoot, getHeadCommit, getWorkingTreeStatus } from '../../core/gitstate/gitRunner.js';
@@ -34,7 +34,7 @@ import { checkIntegrations } from '../../integrations/doctor.js';
 import { runRetrievalBenchmark, type RetrievalQuery } from '../../bench/retrieval.js';
 import { ensureRepoOnboarded, indexWithinLimit } from '../../onboarding/auto.js';
 import { refreshIndex } from '../../indexer/refresh.js';
-import { formatContext, formatExact, formatSearch, formatSymbols, searchRecord } from '../format.js';
+import { formatContext, formatExact, formatReferences, formatSearch, formatSymbols, searchRecord } from '../format.js';
 import { exactMatches, SYMBOL_KINDS, symbolsByKind } from '../../context/lookup.js';
 import { onboardWorkspace } from '../../onboarding/workspace.js';
 import { runVerification } from '../../verification/runner.js';
@@ -289,11 +289,11 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       const sessionId = process.env.CLAUDE_CODE_SESSION_ID;
       const session = sessionId ? `${sessionId}-` : null;
       // Tokens are counted on what the agent receives: the printed text, or the JSON payload under --json.
-      const respond = <T>(data: T, shown: string, found: Array<{ path: string }> = []): Result => {
+      const respond = <T>(data: T, shown: string, found: Array<{ path: string }> = [], omitted = 0): Result => {
         try { recordToolCall(db, { repoId: multi ? null : repos[0]!.id, tool: group, session, returnedTokens: estimateTokens(compactOutput ? shown : JSON.stringify(data)), ms: null, query: redactSafe(query), paths: multi ? undefined : [...new Set(found.map((item) => item.path))] }); } catch { /* Telemetry must not interrupt the session. */ }
-        return { code: 0, data };
+        return { code: 0, data, ...(omitted ? { warnings: [`${omitted} more results omitted (raise --limit or --budget)`] } : {}) };
       };
-      const limit = requireCount(option(args, '--limit'), '--limit', 20);
+      const limit = requireCount(option(args, '--limit'), '--limit', refsName ? 100 : 20);
       const budget = requireCount(option(args, '--budget'), '--budget', 1500);
       // Every lookup mode stops at the token budget, so a broad query cannot return tens of thousands of tokens; the first item always fits.
       const fit = <T>(items: T[], text: (item: T) => string): T[] => { let used = 0; const kept: T[] = []; for (const item of items) { used += estimateTokens(text(item)); if (kept.length && used > budget) break; kept.push(item); } return kept; };
@@ -301,13 +301,13 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       if (group === 'search' && refsName) {
         if (values.length > (repoIndex < 0 ? 0 : 1)) fail('Usage: cairn waymark search --refs <symbol> [repo]', 2);
         const all = repos.flatMap((repo) => searchReferences(db, repo.id, refsName).map((hit) => prefixed(repo, hit)));
-        const shown = fit(all.slice(0, limit), (hit) => formatSymbols([hit], 1));
-        const formatted = formatSymbols(shown, all.length);
-        return respond(compactOutput ? formatted : shown, formatted, shown);
+        const shown = fit(all.slice(0, limit), (hit) => `${hit.path}:${hit.line} [${hit.referenceKind}] ${hit.groupName}`);
+        const formatted = formatReferences(shown, all.length);
+        return respond(compactOutput ? formatted : shown, formatted, shown, all.length - shown.length);
       }
       if (group === 'search' && args.includes('--exact')) {
         const all = repos.flatMap((repo) => exactMatches(db, repo.id, query).map((match) => prefixed(repo, match))), shownMatches = fit(all.slice(0, requireCount(option(args, '--limit'), '--limit', 100)), (match) => formatExact([match], 1));
-        return respond(compactOutput ? formatExact(shownMatches, all.length) : shownMatches, formatExact(shownMatches, all.length), shownMatches);
+        return respond(compactOutput ? formatExact(shownMatches, all.length) : shownMatches, formatExact(shownMatches, all.length), shownMatches, all.length - shownMatches.length);
       }
       const kind = group === 'search' ? option(args, '--kind') : undefined;
       if (kind) {
@@ -315,7 +315,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         // The query's words narrow the list to matching names or paths; `*` lists every symbol of the kind.
         const terms = query === '*' ? [] : (query.match(/[\p{L}\p{N}_]+/gu) ?? []);
         const all = repos.flatMap((repo) => symbolsByKind(db, repo.id, kind, terms).map((hit) => prefixed(repo, hit))), shownHits = fit(all.slice(0, requireCount(option(args, '--limit'), '--limit', 100)), (hit) => formatSymbols([hit], 1));
-        return respond(compactOutput ? formatSymbols(shownHits, all.length) : shownHits, formatSymbols(shownHits, all.length), shownHits);
+        return respond(compactOutput ? formatSymbols(shownHits, all.length) : shownHits, formatSymbols(shownHits, all.length), shownHits, all.length - shownHits.length);
       }
       const definitionTerms = new Set(query.toLocaleLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean));
       let inferredKind: string | undefined;
@@ -326,12 +326,15 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         const terms = (query.match(/[\p{L}\p{N}_]+/gu) ?? []).filter((term) => !['class', 'classes', 'function', 'functions', 'definition', 'definitions', 'in', 'the', 'a', 'an'].includes(term.toLocaleLowerCase()));
         const pathTerms = terms.filter((term) => /^(?:frontend|backend|app|routes?|pages?|components?)$/i.test(term));
         const all = repos.flatMap((repo) => symbolsByKind(db, repo.id, inferredKind, terms).filter((hit) => pathTerms.every((term) => hit.path.toLocaleLowerCase().includes(term.toLocaleLowerCase()))).map((hit) => prefixed(repo, hit))), shownHits = fit(all.slice(0, requireCount(option(args, '--limit'), '--limit', 100)), (hit) => formatSymbols([hit], 1));
-        return respond(compactOutput ? formatSymbols(shownHits, all.length) : shownHits, formatSymbols(shownHits, all.length), shownHits);
+        return respond(compactOutput ? formatSymbols(shownHits, all.length) : shownHits, formatSymbols(shownHits, all.length), shownHits, all.length - shownHits.length);
       }
       if (group === 'search') {
         const ranked = rankedHits(limit);
         const hits = fit(ranked.filter((hit, index) => ranked.findIndex(other => other.path === hit.path) === index).slice(0, limit), (hit) => formatSearch([hit], query));
-        return respond(compactOutput ? formatSearch(hits, query) : hits.map((hit) => searchRecord(hit, query)), formatSearch(hits, query), hits);
+        const total = repos.reduce((count, repo) => count + countSearchFiles(db, repo.id, query), 0);
+        const omitted = Math.max(0, total - hits.length);
+        const formatted = `${formatSearch(hits, query)}${omitted ? `\n\n... ${omitted} more results (raise --limit or --budget)` : ''}`;
+        return respond(compactOutput ? formatted : hits.map((hit) => searchRecord(hit, query)), formatted, hits, omitted);
       }
       const results = rankedHits(100);
       const contextHits = compactOutput ? results.filter((hit, index) => results.findIndex(other => other.path === hit.path) === index).slice(0, 2) : results;

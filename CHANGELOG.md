@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `search --refs <symbol>` lists individual import, re-export, call, and module-level sites grouped by file and enclosing symbol; capped lookup modes report omitted result counts. Reference matching uses identifier spelling, so same-name collisions can add results.
+
 ## 0.1.1
 
 - FTS gives file paths and symbol names their own weighted fields; migration v9 rebuilds the index while preserving existing chunks. Oversized symbol chunks split at blank lines or statement boundaries, and reference edges back `search --refs <symbol>` plus a small ranking boost for popular definitions.
