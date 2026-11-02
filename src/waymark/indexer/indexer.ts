@@ -13,6 +13,8 @@ export interface IndexSummary {
   generationId: number; files: number; symbols: number; chunks: number; reusedFiles: number; warnings: number;
 }
 
+type StoreStatements = { file: Database.Statement; symbol: Database.Statement; chunk: Database.Statement };
+
 // Bump when what is stored per file changes (symbol rules, chunking): refreshIndex then rebuilds every repo on its next lookup.
 export const INDEX_SCHEMA_VERSION = 6;
 
@@ -81,13 +83,18 @@ async function indexRepositoryLocked(
   const insertFile = db.prepare('INSERT INTO files (repo_id, generation_id, path, content_hash, mtime_ms, size_bytes, language, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
   const insertSymbol = db.prepare('INSERT INTO symbols (file_id, name, kind, start_line, end_line) VALUES (?, ?, ?, ?, ?)');
   const insertChunk = db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_text, path_text, symbol_text, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const storeStatements = { file: insertFile, symbol: insertSymbol, chunk: insertChunk };
+  const selectSymbols = db.prepare('SELECT name, kind, start_line, end_line FROM symbols WHERE file_id = ?');
+  const selectChunks = db.prepare('SELECT ordinal, start_line, end_line, content_hash, safe_text, search_text, path_text, symbol_text, token_estimate FROM chunks WHERE file_id = ?');
+  const chunkTriggers = db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'chunks'").all() as Array<{ name: string; sql: string }>;
   let symbolCount = 0;
   let chunkCount = 0;
   try {
     db.transaction(() => {
+      for (const trigger of chunkTriggers) db.exec(`DROP TRIGGER "${trigger.name.replaceAll('"', '""')}"`);
       for (const file of candidates) {
         if (!file.unchanged) {
-          const stored = storeFile(db, repoId, generationId, file, now);
+          const stored = storeFile(db, repoId, generationId, file, now, storeStatements);
           symbolCount += stored.symbols;
           chunkCount += stored.chunks;
           continue;
@@ -95,17 +102,21 @@ async function indexRepositoryLocked(
         const language = file.language ?? detectLanguage(file.path);
         const fileId = Number(insertFile.run(repoId, generationId, file.path, file.contentHash, Math.round(file.mtimeMs), file.sizeBytes, language ?? null, now).lastInsertRowid);
         const old = previousByPath.get(file.path)!;
-        const symbols = db.prepare('SELECT name, kind, start_line, end_line FROM symbols WHERE file_id = ?').all(old.id) as Array<{ name: string; kind: string; start_line: number; end_line: number }>;
-        const chunks = db.prepare('SELECT ordinal, start_line, end_line, content_hash, safe_text, search_text, path_text, symbol_text, token_estimate FROM chunks WHERE file_id = ?').all(old.id) as Array<{ ordinal: number; start_line: number; end_line: number; content_hash: string; safe_text: string; search_text: string; path_text: string; symbol_text: string; token_estimate: number }>;
+        const symbols = selectSymbols.all(old.id) as Array<{ name: string; kind: string; start_line: number; end_line: number }>;
+        const chunks = selectChunks.all(old.id) as Array<{ ordinal: number; start_line: number; end_line: number; content_hash: string; safe_text: string; search_text: string; path_text: string; symbol_text: string; token_estimate: number }>;
         for (const symbol of symbols) insertSymbol.run(fileId, symbol.name, symbol.kind, symbol.start_line, symbol.end_line);
         for (const chunk of chunks) insertChunk.run(fileId, chunk.ordinal, chunk.start_line, chunk.end_line, chunk.content_hash, chunk.safe_text, chunk.search_text, chunk.path_text, chunk.symbol_text, chunk.token_estimate);
         symbolCount += symbols.length;
         chunkCount += chunks.length;
       }
       populateReferenceEdges(db, generationId);
+      if (chunkTriggers.length) {
+        db.prepare("INSERT INTO chunk_fts(chunk_fts) VALUES('rebuild')").run();
+        for (const trigger of chunkTriggers) db.exec(trigger.sql);
+      }
       db.prepare('UPDATE index_generations SET status = \'ready\', completed_at = ? WHERE id = ?').run(new Date().toISOString(), generationId);
       db.prepare('INSERT INTO repo_index_state (repo_id, active_generation, schema_version, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(repo_id) DO UPDATE SET active_generation = excluded.active_generation, schema_version = excluded.schema_version, updated_at = excluded.updated_at').run(repoId, generationId, INDEX_SCHEMA_VERSION, new Date().toISOString());
-    })();
+    }).immediate();
   } catch (error) {
     db.prepare('DELETE FROM index_generations WHERE id = ?').run(generationId);
     throw error;
@@ -116,17 +127,20 @@ async function indexRepositoryLocked(
 }
 
 /** Parse one changed file and store its row, symbols and chunks in the given generation. */
-export function storeFile(db: Database.Database, repoId: string, generationId: number, file: CandidateFile, now: string): { symbols: number; chunks: number } {
+export function storeFile(db: Database.Database, repoId: string, generationId: number, file: CandidateFile, now: string, prepared?: StoreStatements): { symbols: number; chunks: number } {
+  const statements = prepared ?? {
+    file: db.prepare('INSERT INTO files (repo_id, generation_id, path, content_hash, mtime_ms, size_bytes, language, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
+    symbol: db.prepare('INSERT INTO symbols (file_id, name, kind, start_line, end_line) VALUES (?, ?, ?, ?, ?)'),
+    chunk: db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_text, path_text, symbol_text, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
+  };
   const language = file.language ?? detectLanguage(file.path);
-  const fileId = Number(db.prepare('INSERT INTO files (repo_id, generation_id, path, content_hash, mtime_ms, size_bytes, language, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(repoId, generationId, file.path, file.contentHash, Math.round(file.mtimeMs), file.sizeBytes, language ?? null, now).lastInsertRowid);
+  const fileId = Number(statements.file.run(repoId, generationId, file.path, file.contentHash, Math.round(file.mtimeMs), file.sizeBytes, language ?? null, now).lastInsertRowid);
   const symbols = extractSymbols(file.content, file.path);
-  const insertSymbol = db.prepare('INSERT INTO symbols (file_id, name, kind, start_line, end_line) VALUES (?, ?, ?, ?, ?)');
-  for (const symbol of symbols) insertSymbol.run(fileId, symbol.name, symbol.kind, symbol.startLine, symbol.endLine);
+  for (const symbol of symbols) statements.symbol.run(fileId, symbol.name, symbol.kind, symbol.startLine, symbol.endLine);
   const chunks = chunkText(file.content, symbols);
   const pathText = buildSearchText(file.path);
   const symbolText = buildSearchText(symbols.map(({ name }) => name).join(' '));
-  const insertChunk = db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_text, path_text, symbol_text, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-  for (const chunk of chunks) insertChunk.run(fileId, chunk.ordinal, chunk.startLine, chunk.endLine, chunk.contentHash, chunk.safeText, buildSearchText(chunk.safeText), pathText, symbolText, chunk.tokenEstimate);
+  for (const chunk of chunks) statements.chunk.run(fileId, chunk.ordinal, chunk.startLine, chunk.endLine, chunk.contentHash, chunk.safeText, buildSearchText(chunk.safeText), pathText, symbolText, chunk.tokenEstimate);
   return { symbols: symbols.length, chunks: chunks.length };
 }
 
@@ -157,7 +171,9 @@ function populateReferenceEdges(db: Database.Database, generationId: number): vo
       const source = active.reduce<(typeof owners)[number] | undefined>((best, symbol) => !best || symbol.endLine - symbol.startLine < best.endLine - best.startLine ? symbol : best, undefined);
       if (!source || (counts.get(source.id)?.size ?? 0) >= 100) continue;
       for (const [name] of lines[offset]!.matchAll(/[A-Za-z_$][\w$]*/g)) {
-        for (const targetId of (targets.get(name) ?? []).slice(0, 5)) {
+        const matches = targets.get(name) ?? [];
+        for (let target = 0; target < Math.min(5, matches.length); target++) {
+          const targetId = matches[target]!;
           if (targetId === source.id) continue;
           let seen = counts.get(source.id);
           if (!seen) counts.set(source.id, seen = new Set());

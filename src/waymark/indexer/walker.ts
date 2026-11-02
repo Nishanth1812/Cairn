@@ -61,7 +61,7 @@ function ignored(path: string, rules: IgnoreRule[]): boolean {
 
 export async function walkRepository(repoRoot: string, previous: Map<string, PreviousFile> = new Map(), onWarning: () => void = () => undefined): Promise<CandidateFile[]> {
   const root = resolve(repoRoot);
-  const files: CandidateFile[] = [];
+  const paths: Array<{ absolute: string; path: string }> = [];
   const visit = async (directory: string, inheritedRules: IgnoreRule[] = []): Promise<void> => {
     let rules = inheritedRules;
     try { rules = [...rules, ...compileRules((await readFile(join(directory, '.gitignore'), 'utf8')).split(/\r?\n/), relative(root, directory).split(sep).join('/'))]; } catch { /* no ignore file */ }
@@ -75,19 +75,26 @@ export async function walkRepository(repoRoot: string, previous: Map<string, Pre
       if (entry.isDirectory()) { await visit(absolute, rules); continue; }
       if (!entry.isFile()) continue;
       if (ignored(path, rules)) continue;
-      let metadata;
-      try { metadata = await stat(absolute); } catch { onWarning(); continue; }
-      if (metadata.size > 2 * 1024 * 1024) { onWarning(); continue; }
-      const cached = previous.get(path);
-      if (cached && cached.mtimeMs === Math.round(metadata.mtimeMs) && cached.sizeBytes === metadata.size) {
-        files.push({ path, content: '', contentHash: cached.hash, mtimeMs: metadata.mtimeMs, sizeBytes: metadata.size, language: languageByExtension[extname(path).toLowerCase()], unchanged: true });
-        continue;
-      }
-      const file = await readCandidate(absolute, path, metadata);
-      if (file) files.push(file); else onWarning();
+      paths.push({ absolute, path });
     }
   };
   await visit(root);
+  const files: CandidateFile[] = [];
+  for (let offset = 0; offset < paths.length; offset += 32) {
+    const batch = await Promise.all(paths.slice(offset, offset + 32).map(async ({ absolute, path }) => {
+      let metadata;
+      try { metadata = await stat(absolute); } catch { onWarning(); return null; }
+      if (metadata.size > 2 * 1024 * 1024) { onWarning(); return null; }
+      const cached = previous.get(path);
+      if (cached && cached.mtimeMs === Math.round(metadata.mtimeMs) && cached.sizeBytes === metadata.size) {
+        return { path, content: '', contentHash: cached.hash, mtimeMs: metadata.mtimeMs, sizeBytes: metadata.size, language: languageByExtension[extname(path).toLowerCase()], unchanged: true };
+      }
+      const file = await readCandidate(absolute, path, metadata);
+      if (!file) onWarning();
+      return file;
+    }));
+    files.push(...batch.filter((file): file is CandidateFile => file !== null));
+  }
   return files;
 }
 

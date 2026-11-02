@@ -33,7 +33,7 @@ import type Database from 'better-sqlite3';
 import { checkIntegrations } from '../../integrations/doctor.js';
 import { runRetrievalBenchmark, type RetrievalQuery } from '../../bench/retrieval.js';
 import { ensureRepoOnboarded, indexWithinLimit } from '../../onboarding/auto.js';
-import { refreshIndex } from '../../indexer/refresh.js';
+import { IndexingInProgress, refreshIndex } from '../../indexer/refresh.js';
 import { formatContext, formatExact, formatReferences, formatSearch, formatSymbols, searchRecord } from '../format.js';
 import { exactMatches, SYMBOL_KINDS, symbolsByKind } from '../../context/lookup.js';
 import { onboardWorkspace } from '../../onboarding/workspace.js';
@@ -281,7 +281,10 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         if (!usable.length) fail(notes.join(' '), 3);
         repos = usable;
       }
-      for (const repo of repos) await refreshIndex(db, repo.id, repo.root_path, { reindex: true });
+      for (const repo of repos) {
+        try { await refreshIndex(db, repo.id, repo.root_path, { reindex: true }); }
+        catch (error) { if (error instanceof IndexingInProgress) return { code: 0, data: error.message }; throw error; }
+      }
       const multi = repos.length > 1; // a workspace: results carry the repo name as a path prefix
       const prefixed = <T extends { path: string }>(repo: (typeof repos)[number], item: T): T => multi ? { ...item, path: `${repo.display_name}/${item.path}` } : item;
       // Records the call for adoption, with the tokens the agent actually received.

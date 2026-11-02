@@ -1,12 +1,68 @@
 import type Database from 'better-sqlite3';
+import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { INDEX_SCHEMA_VERSION, indexRepository, storeFile } from './indexer.js';
 import { readCandidate } from './walker.js';
 
 const PATCH_LIMIT = 200;
 
 export type Refresh = 'fresh' | 'patched' | 'reindexed' | 'none';
+
+export class IndexingInProgress extends Error {}
+
+function alive(pid: number | undefined): boolean {
+  if (!Number.isInteger(pid)) return false;
+  try { process.kill(pid!, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
+}
+
+function startBackgroundIndex(db: Database.Database, repoId: string, root: string): void {
+  if (db.name === ':memory:' || !process.argv[1] || !existsSync(process.argv[1])) return;
+  const id = createHash('sha1').update(repoId).digest('hex');
+  const writerLock = `${db.name}.${id}.index.lock`;
+  try {
+    const lock = JSON.parse(readFileSync(writerLock, 'utf8')) as { pid?: number };
+    if (alive(lock.pid)) return;
+  } catch { /* No active indexer. */ }
+
+  const backgroundLock = `${db.name}.${id}.background.lock`;
+  for (;;) {
+    try { writeFileSync(backgroundLock, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: 'wx' }); break; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      try {
+        const lock = JSON.parse(readFileSync(backgroundLock, 'utf8')) as { pid?: number };
+        if (alive(lock.pid)) return;
+      } catch { /* A partial marker is replaced below. */ }
+      rmSync(backgroundLock, { force: true });
+    }
+  }
+  try {
+    const child = spawn(process.execPath, [process.argv[1]!, 'index', repoId], { cwd: root, detached: true, stdio: 'ignore', windowsHide: true });
+    child.once('error', () => rmSync(backgroundLock, { force: true }));
+    if (child.pid) writeFileSync(backgroundLock, JSON.stringify({ pid: child.pid, at: Date.now() }));
+    child.unref();
+  } catch (error) {
+    rmSync(backgroundLock, { force: true });
+    throw error;
+  }
+}
+
+async function awaitIndex(db: Database.Database, repoId: string, root: string): Promise<void> {
+  startBackgroundIndex(db, repoId, root);
+  const configured = Number(process.env.CAIRN_INDEX_WAIT_MS ?? 10_000);
+  const waitMs = Number.isFinite(configured) ? Math.max(0, Math.min(60_000, configured)) : 10_000;
+  const deadline = Date.now() + waitMs;
+  do {
+    const state = db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repoId) as { active_generation: number | null } | undefined;
+    if (state?.active_generation != null) return;
+    if (Date.now() >= deadline) break;
+    await new Promise(resolve => setTimeout(resolve, Math.min(50, deadline - Date.now())));
+  } while (true);
+  throw new IndexingInProgress(`Indexing ${basename(root)} in the background; use grep for now or retry after it finishes.`);
+}
 
 /**
  * Bring the active index in line with the disk so a search never answers from stale files.
@@ -21,7 +77,8 @@ export async function refreshIndex(db: Database.Database, repoId: string, root: 
   if (generation != null && options.reindex && state?.schema_version !== INDEX_SCHEMA_VERSION) { await indexRepository(db, repoId, root); return 'reindexed'; }
   if (generation == null) {
     if (!options.reindex) return 'none';
-    await indexRepository(db, repoId, root);
+    if (db.name === ':memory:') { await indexRepository(db, repoId, root); return 'reindexed'; }
+    await awaitIndex(db, repoId, root);
     return 'reindexed';
   }
   const rows = db.prepare('SELECT id, path, mtime_ms AS mtimeMs, size_bytes AS sizeBytes FROM files WHERE generation_id = ?').all(generation) as Array<{ id: number; path: string; mtimeMs: number; sizeBytes: number }>;
@@ -53,12 +110,17 @@ export async function refreshIndex(db: Database.Database, repoId: string, root: 
 
   const parsed = await Promise.all(changed.map(async ({ row, info }) => ({ row, file: await readCandidate(join(root, row.path), row.path, info) })));
   const now = new Date().toISOString();
+  const prepared = {
+    file: db.prepare('INSERT INTO files (repo_id, generation_id, path, content_hash, mtime_ms, size_bytes, language, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
+    symbol: db.prepare('INSERT INTO symbols (file_id, name, kind, start_line, end_line) VALUES (?, ?, ?, ?, ?)'),
+    chunk: db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_text, path_text, symbol_text, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
+  };
   db.transaction(() => {
     const remove = db.prepare('DELETE FROM files WHERE id = ?');
     for (const id of gone) remove.run(id);
     for (const { row, file } of parsed) {
       remove.run(row.id);
-      if (file) storeFile(db, repoId, generation, file, now);
+      if (file) storeFile(db, repoId, generation, file, now, prepared);
     }
   }).immediate();
   return 'patched';
