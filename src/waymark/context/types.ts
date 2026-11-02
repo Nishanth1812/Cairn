@@ -9,6 +9,7 @@ export interface CandidateChunk {
   symbols?: string[];
   /** Names of symbols whose definition starts inside this chunk. */
   defines?: string[];
+  referenceCount?: number;
 }
 
 export interface SearchResult extends CandidateChunk {}

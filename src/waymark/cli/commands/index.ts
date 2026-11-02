@@ -11,7 +11,7 @@ import { checkRepoHealth, type HealthReport } from '../../health/healthChecker.j
 import { generatePortfolioSummary } from '../../health/portfolio.js';
 import { indexRepository } from '../../indexer/indexer.js';
 import { packContext } from '../../context/packer.js';
-import { searchChunks } from '../../context/search.js';
+import { searchChunks, searchReferences } from '../../context/search.js';
 import { rankCandidates } from '../../context/ranker.js';
 import { parseIntent, generateDefaultIntent } from '../../core/intents/intentParser.js';
 import { getGitRoot, getHeadCommit, getWorkingTreeStatus } from '../../core/gitstate/gitRunner.js';
@@ -31,7 +31,7 @@ import { openDatabase, repairCorruptDatabase } from '../../storage/db.js';
 import { migrate } from '../../storage/migrator.js';
 import type Database from 'better-sqlite3';
 import { checkIntegrations } from '../../integrations/doctor.js';
-import { runRetrievalBenchmark } from '../../bench/retrieval.js';
+import { runRetrievalBenchmark, type RetrievalQuery } from '../../bench/retrieval.js';
 import { ensureRepoOnboarded, indexWithinLimit } from '../../onboarding/auto.js';
 import { refreshIndex } from '../../indexer/refresh.js';
 import { formatContext, formatExact, formatSearch, formatSymbols, searchRecord } from '../format.js';
@@ -63,7 +63,7 @@ function option(args: string[], name: string, fallback?: string): string | undef
 }
 function positional(args: string[]): string[] {
   const values: string[] = [];
-  const valued = new Set(['--name', '--limit', '--budget', '--scope', '--since', '--source', '--kind', '--query', '--session', '--repo']);
+  const valued = new Set(['--name', '--limit', '--budget', '--scope', '--since', '--source', '--kind', '--refs', '--query', '--session', '--repo']);
   for (let i = 0; i < args.length; i++) {
     if (valued.has(args[i]!)) { i++; continue; }
     if (!args[i]!.startsWith('--')) values.push(args[i]!);
@@ -246,8 +246,10 @@ export async function runCommand(args: string[], compactOutput = false): Promise
     const db = database(); try { const repo = repoRow(db, positional(args.slice(1))[0]); const config = await loadConfig(); const note = await indexWithinLimit(repo.root_path, config.maxTrackedFiles, db, repo.id); return note ? { code: 0, data: { skipped: true, note } } : { code: 0, data: await indexRepository(db, repo.id, repo.root_path, { force: args.includes('--force') }) }; } finally { db.close(); }
   }
   if (group === 'search' || group === 'context') {
+    const refsName = option(args, '--refs');
+    if (refsName && group !== 'search') fail('--refs is available with search only.', 2);
     const values = positional(args.slice(1));
-    if (!values.length) fail(`Usage: cairn waymark ${group} <query> [repo]`, 2);
+    if (!values.length && !refsName) fail(`Usage: cairn waymark ${group} <query> [repo]`, 2);
     await mkdir(paths.state, { recursive: true }); // first use on a fresh machine needs no separate init
     const db = database(false); try {
       let repoIndex = -1;
@@ -255,7 +257,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         if (db.prepare('SELECT 1 FROM repositories WHERE display_name = ? OR id = ?').get(values[i], values[i])) { repoIndex = i; break; }
       }
       const repoArg = repoIndex < 0 ? undefined : values[repoIndex];
-      const query = values.filter((_value, index) => index !== repoIndex).join(' ');
+      const query = refsName ?? values.filter((_value, index) => index !== repoIndex).join(' ');
       if (!query) fail(`Usage: cairn waymark ${group} <query> [repo]`, 2);
       let repos: Array<ReturnType<typeof repoRow>>;
       try { repos = [repoRow(db, repoArg)]; } catch (error) {
@@ -296,6 +298,13 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       // Every lookup mode stops at the token budget, so a broad query cannot return tens of thousands of tokens; the first item always fits.
       const fit = <T>(items: T[], text: (item: T) => string): T[] => { let used = 0; const kept: T[] = []; for (const item of items) { used += estimateTokens(text(item)); if (kept.length && used > budget) break; kept.push(item); } return kept; };
       const rankedHits = (count: number) => repos.flatMap((repo) => rankCandidates(searchChunks(db, repo.id, query, count), query).map((hit) => prefixed(repo, hit))).sort((a, b) => b.score - a.score);
+      if (group === 'search' && refsName) {
+        if (values.length > (repoIndex < 0 ? 0 : 1)) fail('Usage: cairn waymark search --refs <symbol> [repo]', 2);
+        const all = repos.flatMap((repo) => searchReferences(db, repo.id, refsName).map((hit) => prefixed(repo, hit)));
+        const shown = fit(all.slice(0, limit), (hit) => formatSymbols([hit], 1));
+        const formatted = formatSymbols(shown, all.length);
+        return respond(compactOutput ? formatted : shown, formatted, shown);
+      }
       if (group === 'search' && args.includes('--exact')) {
         const all = repos.flatMap((repo) => exactMatches(db, repo.id, query).map((match) => prefixed(repo, match))), shownMatches = fit(all.slice(0, requireCount(option(args, '--limit'), '--limit', 100)), (match) => formatExact([match], 1));
         return respond(compactOutput ? formatExact(shownMatches, all.length) : shownMatches, formatExact(shownMatches, all.length), shownMatches);
@@ -320,7 +329,8 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         return respond(compactOutput ? formatSymbols(shownHits, all.length) : shownHits, formatSymbols(shownHits, all.length), shownHits);
       }
       if (group === 'search') {
-        const hits = fit(rankedHits(limit).slice(0, limit), (hit) => formatSearch([hit], query));
+        const ranked = rankedHits(limit);
+        const hits = fit(ranked.filter((hit, index) => ranked.findIndex(other => other.path === hit.path) === index).slice(0, limit), (hit) => formatSearch([hit], query));
         return respond(compactOutput ? formatSearch(hits, query) : hits.map((hit) => searchRecord(hit, query)), formatSearch(hits, query), hits);
       }
       const results = rankedHits(100);
@@ -404,11 +414,13 @@ Fell back to a sweep after a lookup: ${stats.quality.fallbackPercent == null ? '
     const db = database();
     try {
       const repo = repoRow(db, option(rest, '--repo'));
+      const indexStarted = Date.now();
       await indexRepository(db, repo.id, repo.root_path);
+      const indexMs = Date.now() - indexStarted;
       const queryFile = join(process.cwd(), 'tests', 'waymark', 'golden', 'queries.json');
       if (!existsSync(queryFile)) fail(`Golden query file not found: ${queryFile}`, 3);
-      const queries = JSON.parse(await readFile(queryFile, 'utf8')) as Array<{ query: string; expectedTop3: string[] }>;
-      const report = await runRetrievalBenchmark(db, repo.id, repo.root_path, queries, join(paths.state, 'benchmarks'));
+      const queries = (JSON.parse(await readFile(queryFile, 'utf8')) as RetrievalQuery[]).filter((query) => query.repo ? query.repo === repo.display_name : resolve(repo.root_path) === resolve(process.cwd()));
+      const report = await runRetrievalBenchmark(db, repo.id, repo.root_path, queries, join(paths.state, 'benchmarks'), indexMs);
       return { code: 0, data: report };
     } finally { db.close(); }
   }
@@ -443,7 +455,7 @@ Fell back to a sweep after a lookup: ${stats.quality.fallbackPercent == null ? '
   fail(`Unknown command: ${group ?? ''}`, 2);
 }
 
-const VALUE_FLAGS = new Set(['--name', '--limit', '--budget', '--scope', '--since', '--source', '--suite', '--harness', '--repo', '--tasks', '--repeat', '--task', '--kind', '--query', '--session']);
+const VALUE_FLAGS = new Set(['--name', '--limit', '--budget', '--scope', '--since', '--source', '--suite', '--harness', '--repo', '--tasks', '--repeat', '--task', '--kind', '--refs', '--query', '--session']);
 export const KNOWN_FLAGS = new Set([...VALUE_FLAGS, '--force', '--repair', '--dry-run', '--keep-data', '--interactive', '--yes', '--global', '--suggest', '--uninstall', '--portable', '--exact']);
 
 function validateFlags(args: string[]): void {

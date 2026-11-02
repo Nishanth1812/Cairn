@@ -80,3 +80,19 @@ test('context shows a window around the match when the only hit is bigger than t
   assert.match(text, /zzNeedleInside/);
   assert.ok(text.length < 400 * 6, `expected a clipped window, got ${text.length} chars`);
 });
+
+test('large symbol chunks stay within 60 lines and retain their symbol name', () => {
+  const body = Array.from({ length: 120 }, (_, i) => `  const filler${i} = ${i};`).join('\n');
+  writeFileSync(join(repo, 'src', 'large.js'), `export function longSymbol() {\n${body}\n  return zzLargeSymbolNeedle;\n}\n`);
+  const rows = JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'search', 'zzLargeSymbolNeedle', '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
+  const hit = rows.find((row) => row.path === 'src/large.js');
+  assert.ok(hit);
+  assert.ok(hit.endLine - hit.startLine + 1 <= 60);
+  assert.ok(hit.symbols.includes('longSymbol'));
+});
+
+test('search --refs lists the indexed caller of a symbol', () => {
+  const rows = JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'search', '--refs', 'computeInvoiceTotal', '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
+  assert.deepEqual(rows.map((row) => row.path), ['src/report.js']);
+  assert.equal(rows[0].name, 'monthly');
+});

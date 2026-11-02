@@ -14,7 +14,7 @@ export interface IndexSummary {
 }
 
 // Bump when what is stored per file changes (symbol rules, chunking): refreshIndex then rebuilds every repo on its next lookup.
-export const INDEX_SCHEMA_VERSION = 4;
+export const INDEX_SCHEMA_VERSION = 6;
 
 export async function indexRepository(
   db: Database.Database, repoId: string, repoRoot: string, options: { force?: boolean } = {},
@@ -80,7 +80,7 @@ async function indexRepositoryLocked(
   const generationId = Number(db.prepare('INSERT INTO index_generations (repo_id, fingerprint, status, started_at) VALUES (?, ?, \'building\', ?)').run(repoId, fingerprint, now).lastInsertRowid);
   const insertFile = db.prepare('INSERT INTO files (repo_id, generation_id, path, content_hash, mtime_ms, size_bytes, language, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
   const insertSymbol = db.prepare('INSERT INTO symbols (file_id, name, kind, start_line, end_line) VALUES (?, ?, ?, ?, ?)');
-  const insertChunk = db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_text, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+  const insertChunk = db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_text, path_text, symbol_text, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
   let symbolCount = 0;
   let chunkCount = 0;
   try {
@@ -96,12 +96,13 @@ async function indexRepositoryLocked(
         const fileId = Number(insertFile.run(repoId, generationId, file.path, file.contentHash, Math.round(file.mtimeMs), file.sizeBytes, language ?? null, now).lastInsertRowid);
         const old = previousByPath.get(file.path)!;
         const symbols = db.prepare('SELECT name, kind, start_line, end_line FROM symbols WHERE file_id = ?').all(old.id) as Array<{ name: string; kind: string; start_line: number; end_line: number }>;
-        const chunks = db.prepare('SELECT ordinal, start_line, end_line, content_hash, safe_text, search_text, token_estimate FROM chunks WHERE file_id = ?').all(old.id) as Array<{ ordinal: number; start_line: number; end_line: number; content_hash: string; safe_text: string; search_text: string; token_estimate: number }>;
+        const chunks = db.prepare('SELECT ordinal, start_line, end_line, content_hash, safe_text, search_text, path_text, symbol_text, token_estimate FROM chunks WHERE file_id = ?').all(old.id) as Array<{ ordinal: number; start_line: number; end_line: number; content_hash: string; safe_text: string; search_text: string; path_text: string; symbol_text: string; token_estimate: number }>;
         for (const symbol of symbols) insertSymbol.run(fileId, symbol.name, symbol.kind, symbol.start_line, symbol.end_line);
-        for (const chunk of chunks) insertChunk.run(fileId, chunk.ordinal, chunk.start_line, chunk.end_line, chunk.content_hash, chunk.safe_text, chunk.search_text, chunk.token_estimate);
+        for (const chunk of chunks) insertChunk.run(fileId, chunk.ordinal, chunk.start_line, chunk.end_line, chunk.content_hash, chunk.safe_text, chunk.search_text, chunk.path_text, chunk.symbol_text, chunk.token_estimate);
         symbolCount += symbols.length;
         chunkCount += chunks.length;
       }
+      populateReferenceEdges(db, generationId);
       db.prepare('UPDATE index_generations SET status = \'ready\', completed_at = ? WHERE id = ?').run(new Date().toISOString(), generationId);
       db.prepare('INSERT INTO repo_index_state (repo_id, active_generation, schema_version, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(repo_id) DO UPDATE SET active_generation = excluded.active_generation, schema_version = excluded.schema_version, updated_at = excluded.updated_at').run(repoId, generationId, INDEX_SCHEMA_VERSION, new Date().toISOString());
     })();
@@ -122,7 +123,49 @@ export function storeFile(db: Database.Database, repoId: string, generationId: n
   const insertSymbol = db.prepare('INSERT INTO symbols (file_id, name, kind, start_line, end_line) VALUES (?, ?, ?, ?, ?)');
   for (const symbol of symbols) insertSymbol.run(fileId, symbol.name, symbol.kind, symbol.startLine, symbol.endLine);
   const chunks = chunkText(file.content, symbols);
-  const insertChunk = db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_text, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
-  for (const chunk of chunks) insertChunk.run(fileId, chunk.ordinal, chunk.startLine, chunk.endLine, chunk.contentHash, chunk.safeText, buildSearchText(chunk.safeText), chunk.tokenEstimate);
+  const pathText = buildSearchText(file.path);
+  const symbolText = buildSearchText(symbols.map(({ name }) => name).join(' '));
+  const insertChunk = db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_text, path_text, symbol_text, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  for (const chunk of chunks) insertChunk.run(fileId, chunk.ordinal, chunk.startLine, chunk.endLine, chunk.contentHash, chunk.safeText, buildSearchText(chunk.safeText), pathText, symbolText, chunk.tokenEstimate);
   return { symbols: symbols.length, chunks: chunks.length };
+}
+
+function populateReferenceEdges(db: Database.Database, generationId: number): void {
+  const symbols = db.prepare('SELECT s.id, s.file_id AS fileId, s.name, s.start_line AS startLine, s.end_line AS endLine FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.generation_id = ? ORDER BY f.path, s.start_line').all(generationId) as Array<{ id: number; fileId: number; name: string; startLine: number; endLine: number }>;
+  const targets = new Map<string, number[]>();
+  const byFile = new Map<number, typeof symbols>();
+  for (const symbol of symbols) {
+    const targetIds = targets.get(symbol.name) ?? [];
+    targetIds.push(symbol.id);
+    targets.set(symbol.name, targetIds);
+    const fileSymbols = byFile.get(symbol.fileId) ?? [];
+    fileSymbols.push(symbol);
+    byFile.set(symbol.fileId, fileSymbols);
+  }
+  const chunks = db.prepare('SELECT c.file_id AS fileId, c.start_line AS startLine, c.safe_text AS safeText FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.generation_id = ? ORDER BY f.path, c.start_line').all(generationId) as Array<{ fileId: number; startLine: number; safeText: string }>;
+  const insert = db.prepare("INSERT OR IGNORE INTO edges (source_symbol_id, target_symbol_id, target_text, kind, confidence) VALUES (?, ?, ?, 'reference', 1)");
+  const counts = new Map<number, Set<number>>();
+  for (const chunk of chunks) {
+    const owners = byFile.get(chunk.fileId) ?? [];
+    const lines = chunk.safeText.split('\n');
+    const active: typeof owners = [];
+    let nextOwner = 0;
+    for (let offset = 0; offset < lines.length; offset++) {
+      const line = chunk.startLine + offset;
+      while (nextOwner < owners.length && owners[nextOwner]!.startLine <= line) active.push(owners[nextOwner++]!);
+      for (let i = active.length - 1; i >= 0; i--) if (active[i]!.endLine < line) active.splice(i, 1);
+      const source = active.reduce<(typeof owners)[number] | undefined>((best, symbol) => !best || symbol.endLine - symbol.startLine < best.endLine - best.startLine ? symbol : best, undefined);
+      if (!source || (counts.get(source.id)?.size ?? 0) >= 100) continue;
+      for (const [name] of lines[offset]!.matchAll(/[A-Za-z_$][\w$]*/g)) {
+        for (const targetId of (targets.get(name) ?? []).slice(0, 5)) {
+          if (targetId === source.id) continue;
+          let seen = counts.get(source.id);
+          if (!seen) counts.set(source.id, seen = new Set());
+          if (seen.size >= 100 || seen.has(targetId)) continue;
+          seen.add(targetId);
+          insert.run(source.id, targetId, name);
+        }
+      }
+    }
+  }
 }

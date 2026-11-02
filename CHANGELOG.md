@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- FTS gives file paths and symbol names their own weighted fields; migration v9 rebuilds the index while preserving existing chunks. Oversized symbol chunks split at blank lines or statement boundaries, and reference edges back `search --refs <symbol>` plus a small ranking boost for popular definitions.
+- Retrieval benchmark reports hit@1/3/5, packed-token mean/max, index time and DB size for 67 Cairn tuning queries and 10 held-out public `p-limit` queries, excluding its own golden file from retrieval. Cairn improved from 64.2%/85.1%/91.0% to 71.6%/89.6%/95.5%; mean/max packed tokens fell from 604/1,513 to 527/1,194. The public suite moved from 30%/100%/100% to 40%/100%/100%; mean/max tokens fell from 386/918 to 363/538. Forced indexing median rose from 622 ms to 1,146 ms; fresh single-repo DB size fell from 2.92 MB to 209 KB.
 - Structural class and function definition queries now return matching symbols, and exact-match excerpts keep the match visible on long lines.
 - Search finds words inside camelCase names (`invoice` finds `computeInvoiceTotal`) and matches word stems (`indexing` finds `index`). Existing repos re-index once, automatically. Benchmark 17 to 19 of 25.
 - `search --json` returns the matched line instead of the whole chunk (about 6x smaller: on 40 real queries, the same build comparison went from 8,881 to 1,424 tokens on average; the printed text form stayed at about 620-640), and stats count the tokens a caller really received, including under `--json`.

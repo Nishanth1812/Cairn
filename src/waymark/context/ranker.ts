@@ -27,10 +27,11 @@ export function rankCandidates(candidates: CandidateChunk[], query: string): Ran
     const pathMatch = queryWords.some(word => pathParts.some(part => part === word || part.includes(word) || (part.length >= 4 && word.startsWith(part))));
     const pathScore = pathMatch ? 1 : 0;
     const symbolScore = symbolMatch ? 1 : 0;
+    const referenceScore = Math.min(candidate.referenceCount ?? 0, 20) / 20;
     const testPenalty = (isLowValue(candidate.path) && !hasTestTerm) || (isProse(candidate.path) && !hasProseTerm) ? 0.35 : 0;
     const intentScore = isIntent(candidate.path) && queryWords.some(word => words(candidate.safeText).includes(word)) ? 1 : 0;
     const penalty = Math.max(testPenalty, isBoilerplate(candidate.safeText) ? 0.35 : 0);
-    const score = Math.max(0, 0.45 * candidate.normalizedBM25 + 0.40 * defScore + 0.20 * symbolScore + 0.15 * pathScore + 0.10 * intentScore - penalty);
+    const score = Math.max(0, 0.45 * candidate.normalizedBM25 + 0.40 * defScore + 0.20 * symbolScore + 0.15 * pathScore + 0.10 * intentScore + 0.05 * referenceScore - penalty);
     const signals: Array<[SelectionReason, number]> = [
       ['lexical', candidate.normalizedBM25], ['symbol', Math.max(symbolScore, defScore)], ['path', pathScore], ['intent', intentScore],
     ];

@@ -32,6 +32,7 @@ cairn waymark context "where is auth handled"      # ranked snippets packed to a
 cairn waymark search "retryRequest"                # ranked hits
 cairn waymark search --exact "TODO(auth)"          # case-insensitive literal matches, file:line (not regex)
 cairn waymark search --kind function "*"           # definitions by kind
+cairn waymark search --refs retryRequest           # functions and methods that use a symbol
 cairn waymark search "class definitions in backend" # matching class symbols in the backend path
 cairn waymark task start "migrate billing"         # name a long task; checkpoints are saved automatically
 cairn waymark health                               # stale branches, dirty files
@@ -42,8 +43,8 @@ Add `--json` for machine output. `cairn waymark --help` lists every command.
 
 ## How it works
 
-1. **Index.** Files are chunked along symbol boundaries and stored with a full-text index (SQLite FTS5). Ignored files, binaries, and sensitive paths (`.env*`, keys) are skipped.
-2. **Rank.** BM25 plus boosts for exact symbol definitions, path matches and intent notes; tests, docs and import-only chunks are demoted unless the query asks for them. Class or function definition queries return matching symbols; route and page queries use file paths.
+1. **Index.** Files are chunked along symbol boundaries and split above 60 lines or about 600 tokens. SQLite FTS5 weights file paths and symbol names above body mentions. Ignored files, binaries, and sensitive paths (`.env*`, keys) are skipped.
+2. **Rank.** BM25 plus boosts for exact symbol definitions, path matches, referenced definitions and intent notes; tests, docs and import-only chunks are demoted unless the query asks for them. Class or function definition queries return matching symbols; route and page queries use file paths.
 3. **Hooks.** For Claude Code, Waymark hooks suggest a lookup before a broad `grep`/`find`. A first sweep is denied with the lookup to run; filing feedback (`cairn waymark feedback`) unlocks the sweep, so the agent is never trapped.
 
 State lives in the OS state directory (`%LOCALAPPDATA%\weft\state` on Windows, `$XDG_STATE_HOME/weft` elsewhere). `cairn waymark clean --yes` prunes stale index data; `cairn waymark setup --uninstall` removes the hooks and managed instruction blocks.

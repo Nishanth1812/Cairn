@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3';
 import type { SearchResult } from './types.js';
 
+export interface ReferenceHit { path: string; startLine: number; endLine: number; name: string; kind: string }
+
 export function searchChunks(db: Database.Database, repoId: string, query: string, limit = 20): SearchResult[] {
   const terms = query.match(/[\p{L}\p{N}_]+/gu) ?? [];
   if (!terms.length || !Number.isFinite(limit) || limit < 1) return [];
@@ -10,7 +12,7 @@ export function searchChunks(db: Database.Database, repoId: string, query: strin
   // Symbols are looked up only for the rows that survive the LIMIT; doing it per match cost 4-5x the search itself.
   const rows = db.prepare(`
     WITH top AS MATERIALIZED (
-      SELECT f.id AS fileId, f.path, c.start_line AS startLine, c.end_line AS endLine, c.safe_text AS safeText, bm25(chunk_fts) AS rank
+      SELECT f.id AS fileId, f.path, c.start_line AS startLine, c.end_line AS endLine, c.safe_text AS safeText, bm25(chunk_fts, 6.0, 4.0, 1.0) AS rank
       FROM chunk_fts
       JOIN chunks c ON c.id = chunk_fts.rowid
       JOIN files f ON f.id = c.file_id
@@ -19,11 +21,12 @@ export function searchChunks(db: Database.Database, repoId: string, query: strin
       LIMIT ?
     )
     SELECT path, startLine, endLine, safeText, rank,
+      COALESCE((SELECT MAX((SELECT COUNT(*) FROM edges e WHERE e.target_symbol_id = s.id)) FROM symbols s WHERE s.file_id = top.fileId AND s.start_line BETWEEN top.startLine AND top.endLine), 0) AS referenceCount,
       COALESCE((SELECT group_concat(name, char(31)) FROM symbols s WHERE s.file_id = top.fileId), '') AS symbolNames
     FROM top
     ORDER BY rank ASC, path ASC, startLine ASC
   `).all(match, repoId, state.active_generation, Math.floor(limit)) as Array<{
-    path: string; startLine: number; endLine: number; safeText: string; rank: number; symbolNames: string;
+    path: string; startLine: number; endLine: number; safeText: string; rank: number; referenceCount: number; symbolNames: string;
   }>;
   const ranked = rows.map(({ rank, symbolNames, ...row }) => ({ ...row, rank, symbols: symbolNames ? symbolNames.split(String.fromCharCode(31)) : [] }));
   // Exact symbol names are looked up directly: a definition must be a candidate even when plain text matching ranks it below the limit.
@@ -48,4 +51,19 @@ export function searchChunks(db: Database.Database, repoId: string, query: strin
     ...row,
     normalizedBM25: worstRank === bestRank ? 1 : (worstRank - rank) / (worstRank - bestRank),
   }));
+}
+
+export function searchReferences(db: Database.Database, repoId: string, name: string, limit = 100): ReferenceHit[] {
+  const state = db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repoId) as { active_generation: number | null } | undefined;
+  if (state?.active_generation == null) return [];
+  return db.prepare(`
+    SELECT DISTINCT f.path, source.start_line AS startLine, source.end_line AS endLine, source.name, source.kind
+    FROM edges e
+    JOIN symbols target ON target.id = e.target_symbol_id
+    JOIN symbols source ON source.id = e.source_symbol_id
+    JOIN files f ON f.id = source.file_id
+    WHERE target.name = ? AND e.kind = 'reference' AND f.repo_id = ? AND f.generation_id = ?
+    ORDER BY f.path, source.start_line
+    LIMIT ?
+  `).all(name, repoId, state.active_generation, Math.floor(limit)) as ReferenceHit[];
 }

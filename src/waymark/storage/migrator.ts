@@ -142,7 +142,32 @@ CREATE TRIGGER chunks_au AFTER UPDATE ON chunks BEGIN
 END;
 INSERT INTO chunk_fts(chunk_fts) VALUES('rebuild');
 `;
-const migrations = [{ version: 1, sql: v1 }, { version: 2, sql: v2 }, { version: 3, sql: v3 }, { version: 4, sql: v4 }, { version: 5, sql: v5 }, { version: 6, sql: v6 }, { version: 7, sql: v7 }, { version: 8, sql: v8 }];
+const v9 = `
+ALTER TABLE chunks ADD COLUMN path_text TEXT NOT NULL DEFAULT '';
+ALTER TABLE chunks ADD COLUMN symbol_text TEXT NOT NULL DEFAULT '';
+UPDATE chunks SET path_text = (SELECT path FROM files WHERE files.id = chunks.file_id);
+UPDATE chunks SET symbol_text = COALESCE((SELECT group_concat(name, ' ') FROM symbols WHERE symbols.file_id = chunks.file_id), '');
+DROP TRIGGER chunks_ai; DROP TRIGGER chunks_ad; DROP TRIGGER chunks_au;
+DROP TABLE chunk_fts;
+CREATE VIRTUAL TABLE chunk_fts USING fts5(
+  path_text, symbol_text, search_text, content='chunks', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER chunks_ai AFTER INSERT ON chunks BEGIN
+  INSERT INTO chunk_fts(rowid, path_text, symbol_text, search_text) VALUES (new.id, new.path_text, new.symbol_text, new.search_text);
+END;
+CREATE TRIGGER chunks_ad AFTER DELETE ON chunks BEGIN
+  INSERT INTO chunk_fts(chunk_fts, rowid, path_text, symbol_text, search_text) VALUES('delete', old.id, old.path_text, old.symbol_text, old.search_text);
+END;
+CREATE TRIGGER chunks_au AFTER UPDATE ON chunks BEGIN
+  INSERT INTO chunk_fts(chunk_fts, rowid, path_text, symbol_text, search_text) VALUES('delete', old.id, old.path_text, old.symbol_text, old.search_text);
+  INSERT INTO chunk_fts(rowid, path_text, symbol_text, search_text) VALUES (new.id, new.path_text, new.symbol_text, new.search_text);
+END;
+INSERT INTO chunk_fts(chunk_fts) VALUES('rebuild');
+`;
+const v10 = `
+CREATE INDEX idx_edges_target_symbol ON edges(target_symbol_id);
+`;
+const migrations = [{ version: 1, sql: v1 }, { version: 2, sql: v2 }, { version: 3, sql: v3 }, { version: 4, sql: v4 }, { version: 5, sql: v5 }, { version: 6, sql: v6 }, { version: 7, sql: v7 }, { version: 8, sql: v8 }, { version: 9, sql: v9 }, { version: 10, sql: v10 }];
 const checksum = (sql: string) => createHash('sha256').update(sql).digest('hex');
 
 export function migrate(db: Database.Database, now: () => string = () => new Date().toISOString()): number[] {

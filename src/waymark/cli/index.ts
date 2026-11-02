@@ -18,6 +18,7 @@ Commands: init, doctor, onboard, instructions, repos, index, search, context, ta
 
 Search: cairn waymark search "<words>" [repo] ranks code by relevance.
   --exact lists every case-insensitive literal match (file:line; not a regex); --kind function|class|interface|type|method|variable lists definitions (use * for all);
+  --refs <symbol> lists functions and methods that reference a symbol;
   Queries like "class definitions in backend" also return matching symbols;
   --limit N caps the list. Run from a folder of repos to search all of them.
 
