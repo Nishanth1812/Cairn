@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import Database from 'better-sqlite3';
-import { mkdirSync, mkdtempSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { stateDbPath } from './stateDb.mjs';
@@ -95,4 +95,9 @@ test('search --refs lists the indexed caller of a symbol', () => {
   const rows = JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'search', '--refs', 'computeInvoiceTotal', '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
   assert.deepEqual(rows.map((row) => row.path), ['src/report.js']);
   assert.equal(rows[0].name, 'monthly');
+});
+
+test('--version reports the version in package.json', () => {
+  const expected = JSON.parse(readFileSync('package.json', 'utf8')).version;
+  assert.ok(execFileSync('node', ['--no-warnings', BIN, '--version'], { env, encoding: 'utf8' }).includes(expected));
 });
