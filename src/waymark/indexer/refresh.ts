@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
+import { getGitRefreshState } from '../core/gitstate/gitRunner.js';
 import { INDEX_SCHEMA_VERSION, indexRepository, indexRepositoryLocked, indexWaitBudgetMs, IndexingInProgress, storeFile, withIndexLock } from './indexer.js';
 import { readCandidate } from './walker.js';
 
@@ -93,11 +94,26 @@ export async function refreshIndex(db: Database.Database, repoId: string, root: 
 }
 
 async function refreshIndexLocked(db: Database.Database, repoId: string, root: string, options: { reindex: boolean }): Promise<Refresh> {
-  const state = db.prepare('SELECT active_generation, schema_version FROM repo_index_state WHERE repo_id = ?').get(repoId) as { active_generation: number | null; schema_version: number } | undefined;
+  const state = db.prepare('SELECT active_generation, schema_version, git_head AS gitHead FROM repo_index_state WHERE repo_id = ?').get(repoId) as { active_generation: number | null; schema_version: number; gitHead: string | null } | undefined;
   const generation = state?.active_generation;
   if (generation == null) return 'none';
   // Built by an older extractor: rebuild, or a new kind of symbol stays invisible until its file happens to change.
   if (options.reindex && state?.schema_version !== INDEX_SCHEMA_VERSION) { await indexRepositoryLocked(db, repoId, root, {}); return 'reindexed'; }
+  const git = await getGitRefreshState(root);
+  const indexedHead = state?.gitHead ?? null;
+  if (options.reindex && git?.clean) {
+    if (indexedHead === git.head) return 'fresh';
+    if (indexedHead !== null && indexedHead !== git.head) {
+      await indexRepositoryLocked(db, repoId, root, { force: true });
+      db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(git.head, repoId);
+      return 'reindexed';
+    }
+  }
+  if (options.reindex && git?.structural) {
+    await indexRepositoryLocked(db, repoId, root, {});
+    db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(git.head, repoId);
+    return 'reindexed';
+  }
   const rows = db.prepare('SELECT id, path, mtime_ms AS mtimeMs, size_bytes AS sizeBytes FROM files WHERE generation_id = ?').all(generation) as Array<{ id: number; path: string; mtimeMs: number; sizeBytes: number }>;
   const completed = db.prepare('SELECT completed_at AS at FROM index_generations WHERE id = ?').get(generation) as { at: string | null } | undefined;
   const builtAt = completed?.at ? Date.parse(completed.at) : 0;
@@ -121,9 +137,13 @@ async function refreshIndexLocked(db: Database.Database, repoId: string, root: s
   }
   if (options.reindex && (structural || changed.length + gone.length > PATCH_LIMIT)) {
     await indexRepositoryLocked(db, repoId, root, {});
+    if (git) db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(git.head, repoId);
     return 'reindexed';
   }
-  if (!changed.length && !gone.length) return 'fresh';
+  if (!changed.length && !gone.length) {
+    if (git) db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(git.head, repoId);
+    return 'fresh';
+  }
 
   const parsed = await Promise.all(changed.map(async ({ row, info }) => ({ row, file: await readCandidate(join(root, row.path), row.path, info) })));
   const now = new Date().toISOString();
@@ -141,5 +161,6 @@ async function refreshIndexLocked(db: Database.Database, repoId: string, root: s
       if (file) storeFile(db, repoId, generation, file, now, prepared);
     }
   }).immediate();
+  if (git) db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(git.head, repoId);
   return 'patched';
 }

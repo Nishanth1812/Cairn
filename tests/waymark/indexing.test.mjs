@@ -216,6 +216,51 @@ test('a ready lookup bounds lock waiting and labels results from the last genera
   }
 });
 
+test('warm refreshes detect modified, untracked, deleted, and branch-switched files', () => {
+  const repo = mkdtempSync(join(base, 'refresh-fast-path-repo-'));
+  const home = mkdtempSync(join(base, 'refresh-fast-path-home-'));
+  const env = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: join(home, 'r'),
+    LOCALAPPDATA: join(home, 'l'),
+    XDG_CONFIG_HOME: join(home, 'c'),
+    XDG_STATE_HOME: join(home, 's'),
+    XDG_CACHE_HOME: join(home, 'k'),
+  };
+  const search = (query) => JSON.parse(execFileSync('node', ['--no-warnings', cli, 'search', query, '--json'], { cwd: repo, env, encoding: 'utf8' }));
+  try {
+    execFileSync('git', ['init', '--quiet', '-b', 'main'], { cwd: repo });
+    mkdirSync(join(repo, 'src'));
+    writeFileSync(join(repo, 'src', 'entry.js'), 'export function initialRefreshNeedle() { return 1; }\n');
+    execFileSync('git', ['add', 'src'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'main'], { cwd: repo });
+    assert.match(JSON.stringify(search('initialRefreshNeedle').data), /entry\.js/);
+
+    writeFileSync(join(repo, 'src', 'entry.js'), 'export function modifiedRefreshNeedle() { return 2; }\n');
+    assert.match(JSON.stringify(search('modifiedRefreshNeedle').data), /entry\.js/);
+    writeFileSync(join(repo, 'src', 'untracked.js'), 'export function untrackedRefreshNeedle() { return 3; }\n');
+    assert.match(JSON.stringify(search('untrackedRefreshNeedle').data), /untracked\.js/);
+    rmSync(join(repo, 'src', 'entry.js'));
+    assert.doesNotMatch(JSON.stringify(search('modifiedRefreshNeedle').data), /entry\.js/);
+    execFileSync('git', ['checkout', '--', 'src/entry.js'], { cwd: repo });
+    rmSync(join(repo, 'src', 'untracked.js'));
+
+    execFileSync('git', ['checkout', '-b', 'other'], { cwd: repo });
+    writeFileSync(join(repo, 'src', 'branch.js'), 'export function branchRefreshNeedle() { return 4; }\n');
+    execFileSync('git', ['add', 'src'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'other'], { cwd: repo });
+    assert.match(JSON.stringify(search('branchRefreshNeedle').data), /branch\.js/);
+    execFileSync('git', ['checkout', '--quiet', 'main'], { cwd: repo });
+    assert.doesNotMatch(JSON.stringify(search('branchRefreshNeedle').data), /branch\.js/);
+    assert.match(JSON.stringify(search('initialRefreshNeedle').data), /entry\.js/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
 test('constraint errors mentioning disk space stay distinct and failed index writes preserve the active generation', () => {
   const repo = mkdtempSync(join(base, 'index-full-repo-'));
   const home = mkdtempSync(join(base, 'index-full-home-'));
