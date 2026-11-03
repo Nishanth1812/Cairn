@@ -151,6 +151,16 @@ test('search --refs recognizes type imports and named or wildcard type re-export
   ]);
 });
 
+test('search --refs keeps multiline comment state while narrowing candidate chunks', () => {
+  writeFileSync(join(repo, 'src', 'impact-boundary-target.js'), 'export function impactBoundaryTarget() {}\n');
+  const comment = ['/*', ...Array.from({ length: 90 }, (_, i) => `comment filler ${i};`), 'impactBoundaryTarget();', '*/'];
+  writeFileSync(join(repo, 'src', 'impact-boundary-sites.js'), [...comment, 'export function realBoundaryUse() { return impactBoundaryTarget(); }'].join('\n') + '\n');
+  const rows = JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'search', '--refs', 'impactBoundaryTarget', '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
+  assert.deepEqual(rows.map(({ path, referenceKind, groupName }) => ({ path, referenceKind, groupName })), [
+    { path: 'src/impact-boundary-sites.js', referenceKind: 'call', groupName: 'realBoundaryUse' },
+  ]);
+});
+
 test('search --refs reports how many sites --limit and --budget omit', () => {
   const limited = execFileSync('node', ['--no-warnings', BIN, 'search', '--refs', 'impactTarget', '--limit', '2'], { cwd: repo, env, encoding: 'utf8' });
   assert.match(limited, /\.\.\. 3 more reference sites/);

@@ -20,6 +20,8 @@ export interface WorkingTreeStatus {
   clean: boolean;
 }
 
+export interface GitRefreshState { head: string; clean: boolean; structural: boolean }
+
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_BUFFER_BYTES = 5 * 1024 * 1024;
 const SAFE_CONFIG = ['-c', 'core.fsmonitor=false', '-c', 'diff.external=', '-c', 'diff.useTextconv=false'];
@@ -108,6 +110,22 @@ export async function getHeadCommit(repoPath: string): Promise<string | null> {
   try {
     const result = await runGit(repoPath, ['rev-parse', '--verify', 'HEAD']);
     return result.exitCode === 0 ? result.stdout.trim() || null : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Read the tracked/untracked state and HEAD together so refresh needs one Git process. */
+export async function getGitRefreshState(repoPath: string): Promise<GitRefreshState | null> {
+  try {
+    const result = await runGit(repoPath, ['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=normal', '--ignore-submodules=none']);
+    if (result.exitCode !== 0) return null;
+    const head = /^# branch\.oid (.+)$/m.exec(result.stdout)?.[1];
+    if (!head) return null;
+    const entries = result.stdout.split('\0');
+    const records = [entries.shift()?.replace(/^(?:#[^\n]*\n)+/, '') ?? '', ...entries].filter(Boolean);
+    const structural = records.some((entry) => entry[0] === '?' || entry[0] === '2' || entry[0] === 'u' || (entry[0] === '1' && (/[ADRC]/.test(entry.slice(2, 4)) || entry.split(' ', 4)[2]?.startsWith('S'))));
+    return { head, clean: records.length === 0, structural };
   } catch {
     return null;
   }

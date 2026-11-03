@@ -6,6 +6,7 @@ import { formatContext } from './format.js';
 import { redactDeep, redactSafe } from '../core/security/redactor.js';
 import { getUserPaths } from '../config/paths.js';
 import { isStorageError, storageFailure } from '../storage/storageErrors.js';
+import { performance } from 'node:perf_hooks';
 
 export interface CliIo { stdout: (text: string) => void; stderr: (text: string) => void }
 export interface CliResult { code: number; data?: unknown; warnings?: string[]; errors?: string[]; status?: string }
@@ -47,6 +48,12 @@ function commandName(args: string[]): string {
 }
 
 export async function runCli(argv = process.argv.slice(2), io: CliIo = { stdout: (text) => process.stdout.write(text), stderr: (text) => process.stderr.write(text) }): Promise<number> {
+  if (process.env.CAIRN_TIMING === '1') {
+    const boot = Number(process.env.CAIRN_TIMING_BOOT);
+    if (Number.isFinite(boot)) {
+      io.stderr(`CAIRN_TIMING node_startup=${boot.toFixed(1)}ms\n`);
+    }
+  }
   const parsed = parseGlobal(argv);
   const args = parsed.args;
   const command = commandName(args);
@@ -55,7 +62,12 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = { stdout:
   else if (args.includes('--help') || args.length === 0 || args[0] === 'help') result = { code: 0, data: HELP };
   else if (args[0] === 'hook') result = await (await import('./hookCommand.js')).runHookCommand(args[1]);
   else {
-    try { result = await (await import('./commands/index.js')).runCommand(args, !parsed.json); }
+    try {
+      const commands = await import('./commands/index.js');
+      const boot = Number(process.env.CAIRN_TIMING_BOOT);
+      if (process.env.CAIRN_TIMING === '1' && Number.isFinite(boot)) io.stderr(`CAIRN_TIMING module_load=${Math.max(0, performance.now() - boot).toFixed(1)}ms\n`);
+      result = await commands.runCommand(args, !parsed.json);
+    }
     catch (error) {
       const reportedError = isStorageError(error) ? storageFailure(getUserPaths().state, error, 64 * 1024 * 1024) : error;
       const message = redactSafe(parsed.verbose && reportedError instanceof Error && !isStorageError(reportedError) ? reportedError.stack ?? reportedError.message : reportedError instanceof Error ? reportedError.message : String(reportedError));

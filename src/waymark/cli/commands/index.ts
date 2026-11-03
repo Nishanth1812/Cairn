@@ -41,17 +41,24 @@ import { onboardWorkspace } from '../../onboarding/workspace.js';
 import { runVerification } from '../../verification/runner.js';
 import { suggestChecks } from '../../verification/suggest.js';
 import { recordVerification } from '../../memory/taskManager.js';
+import { performance } from 'node:perf_hooks';
 
 type Result = { code: number; data?: unknown; warnings?: string[]; errors?: string[]; status?: string };
 class CommandError extends Error { constructor(message: string, readonly exitCode: number) { super(message); } }
 function fail(message: string, code: number): never { throw new CommandError(message, code); }
 const paths = getUserPaths();
 const dbFile = join(paths.state, 'weft.db');
+let databaseElapsed = 0;
+
+function reportTiming(phase: string, elapsed: number): void {
+  if (process.env.CAIRN_TIMING === '1') process.stderr.write(`CAIRN_TIMING ${phase}=${elapsed.toFixed(1)}ms\n`);
+}
 
 function database(required = true): Database.Database {
   if (required && !existsSync(dbFile)) fail('Waymark is not initialized. Run `cairn waymark init` first.', 3);
+  const started = performance.now();
   const db = openDatabase(paths.state);
-  try { migrate(db); } catch (error) { db.close(); throw error; }
+  try { migrate(db); databaseElapsed = performance.now() - started; } catch (error) { db.close(); throw error; }
   return db;
 }
 
@@ -289,6 +296,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         repos = usable;
       }
       const indexingNotices: string[] = [];
+      const refreshStarted = performance.now();
       for (const repo of repos) {
         try { await refreshIndex(db, repo.id, repo.root_path, { reindex: true }); }
         catch (error) {
@@ -298,6 +306,9 @@ export async function runCommand(args: string[], compactOutput = false): Promise
           indexingNotices.push(`Indexing ${repo.display_name} in the background; the lock wait expired, so results below use the last ready generation and may be stale. Retry shortly.`);
         }
       }
+      reportTiming('db_open', databaseElapsed);
+      reportTiming('refresh', performance.now() - refreshStarted);
+      const queryStarted = performance.now();
       const multi = repos.length > 1; // a workspace: results carry the repo name as a path prefix
       const prefixed = <T extends { path: string }>(repo: (typeof repos)[number], item: T): T => multi ? { ...item, path: `${repo.display_name}/${item.path}` } : item;
       // Records the call for adoption, with the tokens the agent actually received.
@@ -306,6 +317,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       const session = sessionId ? `${sessionId}-` : null;
       // Tokens are counted on what the agent receives: the printed text, or the JSON payload under --json.
       const respond = <T>(data: T, shown: string, found: Array<{ path: string }> = [], omitted = 0): Result => {
+        reportTiming('query_pack', performance.now() - queryStarted);
         try { recordToolCall(db, { repoId: multi ? null : repos[0]!.id, tool: group, session, returnedTokens: estimateTokens(compactOutput ? shown : JSON.stringify(data)), ms: null, query: redactSafe(query), paths: multi ? undefined : [...new Set(found.map((item) => item.path))] }); }
         catch (error) { if (isStorageError(error)) throw storageFailure(paths.state, error, 64 * 1024); /* Other telemetry failures must not interrupt the session. */ }
         const warnings = [...indexingNotices, ...(omitted ? [`${omitted} more results omitted (raise --limit or --budget)`] : [])];

@@ -66,8 +66,20 @@ export function searchReferences(db: Database.Database, repoId: string, name: st
     .all(repoId, state.active_generation) as Array<{ path: string; name: string; kind: string; startLine: number; endLine: number }>;
   const byFile = new Map<string, typeof symbols>();
   for (const symbol of symbols) { const rows = byFile.get(symbol.path) ?? []; rows.push(symbol); byFile.set(symbol.path, rows); }
-  const chunks = db.prepare("SELECT f.path, c.start_line AS startLine, c.safe_text AS safeText FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.repo_id = ? AND f.generation_id = ? AND f.language IN ('typescript', 'javascript', 'python', 'go', 'rust', 'java', 'c', 'cpp') ORDER BY f.path, c.start_line")
-    .all(repoId, state.active_generation) as Array<{ path: string; startLine: number; safeText: string }>;
+  const chunks = db.prepare(`
+    WITH candidates AS MATERIALIZED (
+      SELECT DISTINCT f.id
+      FROM chunks c JOIN files f ON f.id = c.file_id
+      WHERE f.repo_id = ? AND f.generation_id = ?
+        AND f.language IN ('typescript', 'javascript', 'python', 'go', 'rust', 'java', 'c', 'cpp')
+        AND (instr(c.safe_text, ?) > 0 OR (instr(c.safe_text, 'export') > 0 AND instr(c.safe_text, '*') > 0))
+    )
+    SELECT f.path, c.start_line AS startLine, c.safe_text AS safeText
+    FROM candidates x JOIN files f ON f.id = x.id JOIN chunks c ON c.file_id = f.id
+    WHERE f.repo_id = ? AND f.generation_id = ?
+      AND f.language IN ('typescript', 'javascript', 'python', 'go', 'rust', 'java', 'c', 'cpp')
+    ORDER BY f.path, c.start_line
+  `).all(repoId, state.active_generation, name, repoId, state.active_generation) as Array<{ path: string; startLine: number; safeText: string }>;
   const identifier = new RegExp(`(?<![\\p{L}\\p{N}_$])${escapeRegex(name)}(?![\\p{L}\\p{N}_$])`, 'gu');
   const hits = new Map<string, ReferenceHit>();
   let currentPath = '';
