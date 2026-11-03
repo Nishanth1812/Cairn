@@ -66,13 +66,15 @@ test('concurrent first lookups return a bounded indexing notice and share one in
       backgroundLock = `${dbPath}.${createHash('sha1').update(repoId).digest('hex')}.background.lock`;
     } finally { db.close(); }
     const pid = JSON.parse(readFileSync(backgroundLock, 'utf8')).pid;
+    let workerRunning = true;
     for (let tries = 0; tries < 100; tries++) {
-      const running = process.platform === 'win32'
+      workerRunning = process.platform === 'win32'
         ? execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8' }).includes(`"${pid}"`)
         : (() => { try { process.kill(pid, 0); return true; } catch { return false; } })();
-      if (!running) break;
+      if (!workerRunning) break;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
+    assert.equal(workerRunning, false, 'the detached index worker must exit after releasing the writer lock');
   } finally {
     rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
@@ -153,6 +155,52 @@ test('parallel first lookups and a hook register and index one fresh repository'
       assert.equal(check.pragma('quick_check', { simple: true }), 'ok');
     } finally { check.close(); }
   } finally {
+    rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('a ready lookup bounds lock waiting and labels results from the last generation as possibly stale', () => {
+  const repo = mkdtempSync(join(base, 'index-wait-repo-'));
+  const home = mkdtempSync(join(base, 'index-wait-home-'));
+  const env = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: join(home, 'r'),
+    LOCALAPPDATA: join(home, 'l'),
+    XDG_CONFIG_HOME: join(home, 'c'),
+    XDG_STATE_HOME: join(home, 's'),
+    XDG_CACHE_HOME: join(home, 'k'),
+    CAIRN_INDEX_WAIT_MS: '5000',
+  };
+  let lockPath;
+  try {
+    execFileSync('git', ['init', '--quiet', '--separate-git-dir', join(home, 'repo-git')], { cwd: repo });
+    mkdirSync(join(repo, 'src'));
+    const source = join(repo, 'src', 'entry.js');
+    writeFileSync(source, 'export function readyGenerationNeedle() { return 1; }\n');
+    execFileSync('git', ['add', 'src'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'fixture'], { cwd: repo, stdio: 'ignore' });
+    const initial = JSON.parse(execFileSync('node', ['--no-warnings', cli, 'search', 'readyGenerationNeedle', '--json'], { cwd: repo, env, encoding: 'utf8' }));
+    assert.match(JSON.stringify(initial.data), /entry\.js/);
+
+    const dbPath = stateDbPath(home);
+    const db = new Database(dbPath, { readonly: true });
+    let repoId;
+    try { repoId = db.prepare('SELECT id FROM repositories LIMIT 1').get().id; }
+    finally { db.close(); }
+    lockPath = `${dbPath}.${createHash('sha1').update(repoId).digest('hex')}.index.lock`;
+    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, at: Date.now(), token: 'held-by-test' }));
+    writeFileSync(source, 'export function changedOnDisk() { return 2; }\n');
+
+    const started = Date.now();
+    const stale = JSON.parse(execFileSync('node', ['--no-warnings', cli, 'search', 'readyGenerationNeedle', '--json'], { cwd: repo, env: { ...env, CAIRN_INDEX_WAIT_MS: '100' }, encoding: 'utf8' }));
+    assert.ok(Date.now() - started < 3_000, 'lookup must respect the configured lock wait');
+    assert.match(JSON.stringify(stale.data), /entry\.js/, 'serve the last ready generation when refresh cannot acquire its lock');
+    assert.match(JSON.stringify(stale.warnings), /last ready generation and may be stale/i);
+  } finally {
+    if (lockPath) rmSync(lockPath, { force: true });
     rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }

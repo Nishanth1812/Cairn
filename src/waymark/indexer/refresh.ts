@@ -1,23 +1,22 @@
 import type Database from 'better-sqlite3';
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
-import { promisify } from 'node:util';
-import { INDEX_SCHEMA_VERSION, indexRepository, indexRepositoryLocked, storeFile, withIndexLock } from './indexer.js';
+import { INDEX_SCHEMA_VERSION, indexRepository, indexRepositoryLocked, indexWaitBudgetMs, IndexingInProgress, storeFile, withIndexLock } from './indexer.js';
 import { readCandidate } from './walker.js';
 
 const PATCH_LIMIT = 200;
-const run = promisify(execFile);
-
 export type Refresh = 'fresh' | 'patched' | 'reindexed' | 'none';
-
-export class IndexingInProgress extends Error {}
 
 function alive(pid: number | undefined): boolean {
   if (!Number.isInteger(pid)) return false;
   try { process.kill(pid!, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
+}
+
+function backgroundLockPath(db: Database.Database, repoId: string): string {
+  return `${db.name}.${createHash('sha1').update(repoId).digest('hex')}.background.lock`;
 }
 
 function startBackgroundIndex(db: Database.Database, repoId: string): void {
@@ -29,7 +28,7 @@ function startBackgroundIndex(db: Database.Database, repoId: string): void {
     if (alive(lock.pid)) return;
   } catch { /* No active indexer. */ }
 
-  const backgroundLock = `${db.name}.${id}.background.lock`;
+  const backgroundLock = backgroundLockPath(db, repoId);
   for (;;) {
     try { writeFileSync(backgroundLock, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: 'wx' }); break; }
     catch (error) {
@@ -52,14 +51,24 @@ function startBackgroundIndex(db: Database.Database, repoId: string): void {
   }
 }
 
+async function waitForBackgroundExit(db: Database.Database, repoId: string, deadline: number): Promise<void> {
+  const lockPath = backgroundLockPath(db, repoId);
+  while (Date.now() < deadline) {
+    let pid: number | undefined;
+    try { pid = (JSON.parse(readFileSync(lockPath, 'utf8')) as { pid?: number }).pid; } catch { return; }
+    if (!alive(pid)) return;
+    await new Promise(resolve => setTimeout(resolve, Math.min(50, deadline - Date.now())));
+  }
+  throw new IndexingInProgress('The background index is still finishing.');
+}
+
 async function awaitIndex(db: Database.Database, repoId: string, root: string): Promise<void> {
   startBackgroundIndex(db, repoId);
-  const configured = Number(process.env.CAIRN_INDEX_WAIT_MS ?? 10_000);
-  const waitMs = Number.isFinite(configured) ? Math.max(0, Math.min(60_000, configured)) : 10_000;
+  const waitMs = indexWaitBudgetMs();
   const deadline = Date.now() + waitMs;
   do {
     const state = db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repoId) as { active_generation: number | null } | undefined;
-    if (state?.active_generation != null) return;
+    if (state?.active_generation != null) { await waitForBackgroundExit(db, repoId, deadline); return; }
     if (Date.now() >= deadline) break;
     await new Promise(resolve => setTimeout(resolve, Math.min(50, deadline - Date.now())));
   } while (true);
@@ -80,7 +89,7 @@ export async function refreshIndex(db: Database.Database, repoId: string, root: 
     await awaitIndex(db, repoId, root);
     return 'reindexed';
   }
-  return withIndexLock(db, repoId, () => refreshIndexLocked(db, repoId, root, options));
+  return withIndexLock(db, repoId, () => refreshIndexLocked(db, repoId, root, options), indexWaitBudgetMs());
 }
 
 async function refreshIndexLocked(db: Database.Database, repoId: string, root: string, options: { reindex: boolean }): Promise<Refresh> {
@@ -89,13 +98,6 @@ async function refreshIndexLocked(db: Database.Database, repoId: string, root: s
   if (generation == null) return 'none';
   // Built by an older extractor: rebuild, or a new kind of symbol stays invisible until its file happens to change.
   if (options.reindex && state?.schema_version !== INDEX_SCHEMA_VERSION) { await indexRepositoryLocked(db, repoId, root, {}); return 'reindexed'; }
-  try {
-    const { stdout } = await run('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: root, timeout: 1_500, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
-    if (!stdout) {
-      db.prepare('UPDATE index_generations SET completed_at = ? WHERE id = ?').run(new Date().toISOString(), generation);
-      return 'fresh';
-    }
-  } catch { /* A slow, missing or non-Git executable falls back to file stats. */ }
   const rows = db.prepare('SELECT id, path, mtime_ms AS mtimeMs, size_bytes AS sizeBytes FROM files WHERE generation_id = ?').all(generation) as Array<{ id: number; path: string; mtimeMs: number; sizeBytes: number }>;
   const completed = db.prepare('SELECT completed_at AS at FROM index_generations WHERE id = ?').get(generation) as { at: string | null } | undefined;
   const builtAt = completed?.at ? Date.parse(completed.at) : 0;

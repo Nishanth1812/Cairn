@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 import { mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { stateDbPath } from './stateDb.mjs';
 import { after, before, test } from 'node:test';
@@ -12,7 +11,7 @@ const BIN = resolve('dist/waymark.js');
 const base = resolve('.test-tmp'); // inside the checkout: the system temp dir is a protected path for auto-onboarding
 mkdirSync(base, { recursive: true });
 const repo = mkdtempSync(join(base, 'repo-'));
-const home = mkdtempSync(join(tmpdir(), 'waymark-home-'));
+const home = mkdtempSync(join(base, 'waymark-home-'));
 const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'r'), LOCALAPPDATA: join(home, 'l'), XDG_CONFIG_HOME: join(home, 'c'), XDG_STATE_HOME: join(home, 's'), XDG_CACHE_HOME: join(home, 'k') };
 const search = (query) => JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'search', query, '--json'], { cwd: repo, env, encoding: 'utf8' })).data.map((hit) => hit.path);
 // Windows state layout (config/paths.ts) under the isolated LOCALAPPDATA.

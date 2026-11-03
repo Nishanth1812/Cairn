@@ -9,7 +9,7 @@ import { setupWeft, type Harness } from '../../integrations/setup.js';
 import { createTask, resumeTask, saveCheckpoint } from '../../memory/taskManager.js';
 import { checkRepoHealth, type HealthReport } from '../../health/healthChecker.js';
 import { generatePortfolioSummary } from '../../health/portfolio.js';
-import { indexRepository } from '../../indexer/indexer.js';
+import { indexRepository, IndexingInProgress } from '../../indexer/indexer.js';
 import { packContext } from '../../context/packer.js';
 import { countSearchFiles, searchChunks, searchReferences } from '../../context/search.js';
 import { rankCandidates } from '../../context/ranker.js';
@@ -34,7 +34,7 @@ import type Database from 'better-sqlite3';
 import { checkIntegrations } from '../../integrations/doctor.js';
 import { runRetrievalBenchmark, type RetrievalQuery } from '../../bench/retrieval.js';
 import { ensureRepoOnboarded, indexWithinLimit } from '../../onboarding/auto.js';
-import { IndexingInProgress, refreshIndex } from '../../indexer/refresh.js';
+import { refreshIndex } from '../../indexer/refresh.js';
 import { formatContext, formatExact, formatReferences, formatSearch, formatSymbols, searchRecord } from '../format.js';
 import { exactMatches, SYMBOL_KINDS, symbolsByKind } from '../../context/lookup.js';
 import { onboardWorkspace } from '../../onboarding/workspace.js';
@@ -288,9 +288,15 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         if (!usable.length) fail(notes.join(' '), 3);
         repos = usable;
       }
+      const indexingNotices: string[] = [];
       for (const repo of repos) {
         try { await refreshIndex(db, repo.id, repo.root_path, { reindex: true }); }
-        catch (error) { if (error instanceof IndexingInProgress) return { code: 0, data: error.message }; throw error; }
+        catch (error) {
+          if (!(error instanceof IndexingInProgress)) throw error;
+          const state = db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repo.id) as { active_generation: number | null } | undefined;
+          if (state?.active_generation == null) return { code: 0, data: error.message };
+          indexingNotices.push(`Indexing ${repo.display_name} in the background; the lock wait expired, so results below use the last ready generation and may be stale. Retry shortly.`);
+        }
       }
       const multi = repos.length > 1; // a workspace: results carry the repo name as a path prefix
       const prefixed = <T extends { path: string }>(repo: (typeof repos)[number], item: T): T => multi ? { ...item, path: `${repo.display_name}/${item.path}` } : item;
@@ -302,7 +308,8 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       const respond = <T>(data: T, shown: string, found: Array<{ path: string }> = [], omitted = 0): Result => {
         try { recordToolCall(db, { repoId: multi ? null : repos[0]!.id, tool: group, session, returnedTokens: estimateTokens(compactOutput ? shown : JSON.stringify(data)), ms: null, query: redactSafe(query), paths: multi ? undefined : [...new Set(found.map((item) => item.path))] }); }
         catch (error) { if (isStorageError(error)) throw storageFailure(paths.state, error, 64 * 1024); /* Other telemetry failures must not interrupt the session. */ }
-        return { code: 0, data, ...(omitted ? { warnings: [`${omitted} more results omitted (raise --limit or --budget)`] } : {}) };
+        const warnings = [...indexingNotices, ...(omitted ? [`${omitted} more results omitted (raise --limit or --budget)`] : [])];
+        return { code: 0, data, ...(warnings.length ? { warnings } : {}) };
       };
       const limit = requireCount(option(args, '--limit'), '--limit', refsName ? 100 : 20);
       const budget = requireCount(option(args, '--budget'), '--budget', 1500);

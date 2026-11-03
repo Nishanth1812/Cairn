@@ -15,6 +15,13 @@ export interface IndexSummary {
   generationId: number; files: number; symbols: number; chunks: number; reusedFiles: number; warnings: number;
 }
 
+export class IndexingInProgress extends Error {}
+
+export function indexWaitBudgetMs(): number {
+  const configured = Number(process.env.CAIRN_INDEX_WAIT_MS ?? 10_000);
+  return Number.isFinite(configured) ? Math.max(0, Math.min(60_000, configured)) : 10_000;
+}
+
 type StoreStatements = { file: Database.Statement; symbol: Database.Statement; chunk: Database.Statement; meta: Database.Statement };
 
 // Bump when what is stored per file changes (symbol rules, chunking): refreshIndex then rebuilds every repo on its next lookup.
@@ -27,7 +34,7 @@ export async function indexRepository(
 }
 
 /** Serialize all writes to a repository's active index across processes. */
-export async function withIndexLock<T>(db: Database.Database, repoId: string, action: () => Promise<T> | T): Promise<T> {
+export async function withIndexLock<T>(db: Database.Database, repoId: string, action: () => Promise<T> | T, waitMs = 30_000): Promise<T> {
   // An in-memory database cannot be shared with another process, so it needs no cross-process lock.
   if (db.name === ':memory:') return action();
   const lockPath = `${db.name}.${createHash('sha1').update(repoId).digest('hex')}.index.lock`;
@@ -54,7 +61,7 @@ export async function withIndexLock<T>(db: Database.Database, repoId: string, ac
         // shortcut: a live holder is only taken over after 60 minutes (pid reuse), no heartbeat; add one if builds ever approach that.
         if (!alive || Date.now() - (lock.at ?? 0) > 60 * 60_000) { await removeIf(lock.token); continue; }
       }
-      if (Date.now() - started > 30_000) throw new Error('Index already running for this repository; retry shortly.');
+      if (Date.now() - started > waitMs) throw new IndexingInProgress(`Index lock wait expired after ${waitMs}ms.`);
       await new Promise(resolve => setTimeout(resolve, 50));
     }
   }
