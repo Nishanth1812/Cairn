@@ -112,3 +112,20 @@ Scoring was blind string matching. Strict file matching requires an exact normal
 - `meta.jsonl`, `schedule.json`, `analysis-pairs.json`, `replacement-pairs.json`: run ledger and selected pairing.
 - `run-once.ps1`, `run-resume.ps1`, `analyze-ab6.mjs`, `replay-selected.ps1`: execution, analysis, and Cairn-call replay.
 - `pilot-report.json`, `replay-status.jsonl`, `cleanup-status.json`: pilot, replay, and cleanup evidence.
+
+
+---
+
+## Follow-up run on build 59b15ca (32 runs, 2 reps per task)
+
+| Measure | A mean | B mean | B−A mean [paired task-cluster bootstrap 95% CI] |
+|---|---:|---:|---:|
+| Wall time | 25.01 s | 31.82 s | +6.81 s [+3.35 s, +11.27 s] |
+| Input tokens | 86,610 | 123,987 | +37,377 [+22,171, +59,051] |
+| Cost | $0.006323 | $0.006091 | −$0.000232 [−$0.001183, +$0.000828] |
+| Turns | 6.69 | 9.63 | +2.94 [+0.31, +6.75] |
+| Key facts correct | 87.5% | 81.3% | −6.3 pp [−18.8 pp, +0.0 pp] |
+| File recall, strict | 72.9% | 66.1% | −6.8 pp [−25.5 pp, +14.6 pp] |
+| File recall, lenient | 89.1% | 87.5% | −1.6 pp [−7.8 pp, +4.7 pp] |
+
+Bootstrap resampled 8 task clusters 10,000 times, retaining each task's paired repetitions. Key-fact score is strict all-facts-correct matching; file recall uses full normalized paths for strict and suffix/basename acceptance for lenient. Input tokens sum input, cache-creation, and cache-read tokens. Claude's result event omitted `num_turns`, so turns count assistant response events.

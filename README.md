@@ -3,8 +3,8 @@
 Cairn is a toolbox for working with AI coding agents. Its first tool, **Waymark**, is a local code index
 that answers "where is X handled?" in a few hundred tokens, so the agent stops grepping and reading whole files.
 
-- **Saves research time.** `cairn waymark context "where is auth handled"` returns ranked, line-ranged snippets and definitions, not a pile of files.
-- **Saves tokens.** Results are packed to a budget (typically a few hundred to ~1k tokens per lookup). Large sweeps by agents are redirected to the index.
+- **Ranked lookups.** `cairn waymark context "where is auth handled"` returns ranked, line-ranged snippets and definitions, not a pile of files, packed to a token budget (typically a few hundred to ~1k tokens).
+- **Measured, not promised.** In controlled A/Bs with a small model on Playwright and Django, agents using Cairn were not faster (about +2 to +7 s per task) and not clearly cheaper. See [docs/waymark/ab-results.md](docs/waymark/ab-results.md). Try it on your own repo and check `cairn waymark stats`.
 - **Local only.** Everything runs on your machine in a SQLite database. Nothing is uploaded, and the code makes no network calls. Secrets found in code are redacted before they are stored or shown.
 - **Honest numbers.** `cairn waymark stats` reports only what it observed (adoption, follow-through, fallbacks), not estimated savings. See [docs/waymark/evaluating.md](docs/waymark/evaluating.md).
 
