@@ -129,3 +129,20 @@ Scoring was blind string matching. Strict file matching requires an exact normal
 | File recall, lenient | 89.1% | 87.5% | −1.6 pp [−7.8 pp, +4.7 pp] |
 
 Bootstrap resampled 8 task clusters 10,000 times, retaining each task's paired repetitions. Key-fact score is strict all-facts-correct matching; file recall uses full normalized paths for strict and suffix/basename acceptance for lenient. Input tokens sum input, cache-creation, and cache-read tokens. Claude's result event omitted `num_turns`, so turns count assistant response events.
+
+---
+
+## Cross-file reference A/B rerun on build 31fd5bb (36 runs, 3 reps/task/arm)
+
+| Measure | A mean | B mean | B−A mean [paired task-cluster bootstrap 95% CI] |
+|---|---:|---:|---:|
+| Wall time (seconds) | 36.56 | 39.53 | 2.97 [-1.78, 10.56] |
+| Input tokens | 118870 | 124427 | 5558 [-17887, 35974] |
+| Cost (USD) | 0.008965 | 0.007803 | -0.001162 [-0.002517, 0.000581] |
+| Turns | 9.39 | 7.78 | -1.61 [-3.11, -0.06] |
+| Function recall | 0.840 | 0.829 | -0.011 [-0.200, 0.167] |
+| Function F1 | 0.736 | 0.703 | -0.032 [-0.203, 0.154] |
+| File recall | 0.889 | 0.870 | -0.019 [-0.222, 0.167] |
+| File F1 | 0.807 | 0.790 | -0.017 [-0.172, 0.156] |
+
+B made a successful `search --refs` call in 13/18 runs (72.2%); A made no Cairn calls. All 36/36 runs and 18/18 pairs were valid; no retries were needed. No run exceeded 120 seconds, so the outlier-excluded results are unchanged. The helpfulness rule was **not met**: wall-time and all function/file recall and F1 intervals include zero. Six tasks are a small sample. New spend: $0.30182584 / $0.45.
