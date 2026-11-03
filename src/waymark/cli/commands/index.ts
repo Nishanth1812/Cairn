@@ -312,7 +312,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         return { code: 0, data, ...(warnings.length ? { warnings } : {}) };
       };
       const limit = requireCount(option(args, '--limit'), '--limit', refsName ? 100 : 20);
-      const budget = requireCount(option(args, '--budget'), '--budget', 1500);
+      const budget = requireCount(option(args, '--budget'), '--budget', group === 'context' ? 1000 : 1500);
       // Every lookup mode stops at the token budget, so a broad query cannot return tens of thousands of tokens; the first item always fits.
       const fit = <T>(items: T[], text: (item: T) => string): T[] => { let used = 0; const kept: T[] = []; for (const item of items) { used += estimateTokens(text(item)); if (kept.length && used > budget) break; kept.push(item); } return kept; };
       const rankedHits = (count: number) => repos.flatMap((repo) => rankCandidates(searchChunks(db, repo.id, query, count), query).map((hit) => prefixed(repo, hit))).sort((a, b) => b.score - a.score);
@@ -355,9 +355,10 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         return respond(compactOutput ? formatted : hits.map((hit) => searchRecord(hit, query)), formatted, hits, omitted);
       }
       const results = rankedHits(100);
-      const contextHits = compactOutput ? results.filter((hit, index) => results.findIndex(other => other.path === hit.path) === index).slice(0, 2) : results;
+      const contextPaths = new Set(results.filter((hit, index) => results.findIndex(other => other.path === hit.path) === index).slice(0, 2).map(hit => hit.path));
+      const contextHits = compactOutput ? results.filter(hit => contextPaths.has(hit.path)) : results;
       const packed = packContext(contextHits, budget, query);
-      return respond(packed, formatContext(packed.items), packed.items);
+      return respond(packed, formatContext(packed.items), packed.items, packed.omittedCount);
     } finally { db.close(); }
   }
   if (group === 'task') {

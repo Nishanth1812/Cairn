@@ -16,14 +16,15 @@ function header(item: Location, query = ''): string {
 function matchingLine(item: Location, query: string): string {
   const lines = item.safeText.split(/\r?\n/);
   const terms = (query.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []);
-  const line = lines.find(candidate => terms.some(term => candidate.toLowerCase().includes(term))) ?? lines[0] ?? '';
+  const matches = (candidate: string) => terms.some(term => candidate.toLowerCase().includes(term));
+  const line = lines.find(candidate => matches(candidate) && !/^\s*(?:\/\/|\/\*|\*|#|<!--)/.test(candidate)) ?? lines.find(matches) ?? lines.find(candidate => candidate.trim()) ?? '';
   return line.trim().slice(0, 200);
 }
 
 export function formatSearch(items: Location[], query = ''): string {
   const unique = items.filter((item, index) => !items.slice(0, index).some(previous => previous.path === item.path && previous.startLine <= item.endLine && item.startLine <= previous.endLine));
   const body = unique.map(item => `${header(item, query)}
-${matchingLine(item, query)}`).join('\n\n');
+${matchingLine(item, query)}`).join('\n');
   // A ranked search is lexical: when no hit holds every word, say so and point at the exact tools instead of leaving the agent to sweep.
   const terms = [...new Set(queryTerms(query))];
   const weak = terms.length >= 3 && !unique.some(item => terms.every(term => item.safeText.toLowerCase().includes(term)));
@@ -38,7 +39,19 @@ export function searchRecord(item: Location & { score: number; selectionReason: 
 }
 
 export function formatContext(items: Location[]): string {
-  return items.map(item => `${header(item)}\n${item.safeText}`).join('\n\n');
+  const byFile = new Map<string, Location[]>();
+  for (const item of items) { const rows = byFile.get(item.path) ?? []; rows.push(item); byFile.set(item.path, rows); }
+  return [...byFile.values()].flatMap(rows => {
+    const merged: Location[] = [];
+    for (const row of rows.sort((a, b) => a.startLine - b.startLine)) {
+      const previous = merged.at(-1);
+      if (previous && row.startLine <= previous.endLine + 1) {
+        previous.safeText += `\n${row.safeText}`;
+        previous.endLine = Math.max(previous.endLine, row.endLine);
+      } else merged.push({ ...row });
+    }
+    return merged.map(item => `${header(item)}\n${item.safeText.trim().replace(/\n{3,}/g, '\n\n')}`);
+  }).join('\n\n');
 }
 
 /** `total` can exceed matches.length when --limit cut the list; say so, so an audit is never silently partial. */

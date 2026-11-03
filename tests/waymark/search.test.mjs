@@ -72,12 +72,28 @@ test('a weak multi-word search points at --exact and --kind; a strong one stays 
   assert.doesNotMatch(text('computeInvoiceTotal'), /No result contains every word/);
 });
 
+test('text search omits comment headers and blank rows between hits', () => {
+  writeFileSync(join(repo, 'src', 'commented.js'), '// sharedSignal documentation header\nexport const sharedSignal = 1;\n');
+  const text = execFileSync('node', ['--no-warnings', BIN, 'search', 'sharedSignal'], { cwd: repo, env, encoding: 'utf8' });
+  assert.match(text, /export const sharedSignal/);
+  assert.doesNotMatch(text, /\/\/ sharedSignal/);
+  assert.doesNotMatch(text, /\n\n/);
+});
+
 test('context shows a window around the match when the only hit is bigger than the budget', () => {
   const padding = Array.from({ length: 400 }, (_, i) => `  const filler${i} = ${i}; // padding that makes this function far larger than the budget`).join('\n');
   writeFileSync(join(repo, 'src', 'long.js'), `export function longRunningJob() {\n${padding}\n  const zzNeedleInside = 1;\n${padding}\n}\n`);
   const text = execFileSync('node', ['--no-warnings', BIN, 'context', 'zzNeedleInside', '--budget', '400'], { cwd: repo, env, encoding: 'utf8' });
   assert.match(text, /zzNeedleInside/);
   assert.ok(text.length < 400 * 6, `expected a clipped window, got ${text.length} chars`);
+});
+
+test('context merges adjacent excerpts from the same file into one range', () => {
+  writeFileSync(join(repo, 'src', 'adjacent.js'), 'export function alphaNeedle() { return sharedSignal; }\nexport function betaNeedle() { return sharedSignal; }\n');
+  const text = execFileSync('node', ['--no-warnings', BIN, 'context', 'sharedSignal', '--limit', '10'], { cwd: repo, env, encoding: 'utf8' });
+  assert.match(text, /alphaNeedle/);
+  assert.match(text, /betaNeedle/);
+  assert.equal((text.match(/src\/adjacent\.js:/g) ?? []).length, 1);
 });
 
 test('large symbol chunks stay within 60 lines and retain their symbol name', () => {

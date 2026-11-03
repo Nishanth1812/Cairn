@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -11,6 +11,16 @@ import { stateDbPath } from './stateDb.mjs';
 const exec = promisify(execFile);
 const base = resolve('.test-tmp');
 const cli = resolve('dist/waymark.js');
+
+test('a plain UserPromptSubmit prompt skips hook state and database work', () => {
+  const home = mkdtempSync(join(base, 'prompt-hook-home-'));
+  const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'r'), LOCALAPPDATA: join(home, 'l'), XDG_CONFIG_HOME: join(home, 'c'), XDG_STATE_HOME: join(home, 's'), XDG_CACHE_HOME: join(home, 'k') };
+  try {
+    const output = execFileSync('node', ['--no-warnings', cli, 'hook', 'user-prompt-submit'], { cwd: process.cwd(), env, encoding: 'utf8', input: JSON.stringify({ prompt: 'Hello, thanks for your help.' }) });
+    assert.equal(output, '');
+    assert.equal(existsSync(stateDbPath(home)), false);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
 
 test('concurrent first lookups return a bounded indexing notice and share one index', async () => {
   const repo = mkdtempSync(join(base, 'indexing-repo-'));

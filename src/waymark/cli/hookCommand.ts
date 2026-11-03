@@ -1,6 +1,4 @@
-import { hookStateDir, logHookFailure, prefetchGitState, runCheckpointHook, runSessionStartHook } from '../hooks/claude.js';
-import { runHookSafely } from '../integrations/claude-code/index.js';
-import { ensureRepoOnboarded } from '../onboarding/auto.js';
+import { hasPromptSearchIntent } from '../hooks/promptIntent.js';
 
 type HookInput = { cwd?: string; prompt?: string; filePath?: string; path?: string; pattern?: string; ranged?: boolean; tool?: string; command?: string; session?: string };
 async function readHookInput(timeoutMs = 150): Promise<HookInput> {
@@ -19,19 +17,21 @@ async function readHookInput(timeoutMs = 150): Promise<HookInput> {
 
 // Kept apart from the command router so a hook only loads the modules it needs (every session start and stop pays this).
 export async function runHookCommand(event: string | undefined): Promise<{ code: number; data?: string }> {
-  const logFailure = async (error: unknown) => { try { await logHookFailure(hookStateDir(), error); } catch { /* Hooks must remain silent and successful when state storage is unavailable. */ } };
+  const logFailure = async (error: unknown) => { try { const { hookStateDir, logHookFailure } = await import('../hooks/claude.js'); await logHookFailure(hookStateDir(), error); } catch { /* Hooks must remain silent and successful when state storage is unavailable. */ } };
   try {
     if (event !== 'session-start' && event !== 'user-prompt-submit' && event !== 'pre-tool-use' && event !== 'stop' && event !== 'pre-compact') { await logFailure(new Error(`Unknown hook event: ${event ?? ''}`)); return { code: 0 }; }
     // Claude Code sends the event payload as JSON on stdin; only the prompt hook needs it.
     const input: HookInput = event === 'user-prompt-submit' || event === 'pre-tool-use' ? await readHookInput() : {};
-    if (event === 'session-start') prefetchGitState(process.cwd());
+    if (event === 'user-prompt-submit' && !hasPromptSearchIntent(input.prompt ?? '')) return { code: 0 };
+    const { runHookSafely } = await import('../integrations/claude-code/safeHook.js');
     const data = await runHookSafely(async () => {
-      if (event === 'pre-tool-use') return (await import('../hooks/prompt.js')).runReadNudge({ stateDir: hookStateDir(), cwd: input.cwd, filePath: input.filePath, path: input.path, pattern: input.pattern, ranged: input.ranged, tool: input.tool, command: input.command, session: input.session });
-      if (event === 'user-prompt-submit') return (await import('../hooks/prompt.js')).runPromptHook({ stateDir: hookStateDir(), cwd: input.cwd, prompt: input.prompt ?? '' });
-      if (event === 'session-start') { const onboarded = await ensureRepoOnboarded(process.cwd());
+      if (event === 'pre-tool-use') { const { hookStateDir } = await import('../hooks/claude.js'); return (await import('../hooks/prompt.js')).runReadNudge({ stateDir: hookStateDir(), cwd: input.cwd, filePath: input.filePath, path: input.path, pattern: input.pattern, ranged: input.ranged, tool: input.tool, command: input.command, session: input.session }); }
+      if (event === 'user-prompt-submit') { const { hookStateDir } = await import('../hooks/claude.js'); return (await import('../hooks/prompt.js')).runPromptHook({ stateDir: hookStateDir(), cwd: input.cwd, prompt: input.prompt ?? '' }); }
+      if (event === 'session-start') { const [{ hookStateDir, prefetchGitState, runSessionStartHook }, { ensureRepoOnboarded }] = await Promise.all([import('../hooks/claude.js'), import('../onboarding/auto.js')]); prefetchGitState(process.cwd()); const onboarded = await ensureRepoOnboarded(process.cwd(), { spawnIndex: false });
         if (onboarded.reason === 'not-git') return (await import('../onboarding/workspace.js')).workspaceHint(process.cwd(), hookStateDir());
-        return runSessionStartHook({ stateDir: hookStateDir() });
+        return runSessionStartHook({ stateDir: hookStateDir(), disableDetachedIndex: true });
       }
+      const { hookStateDir, runCheckpointHook } = await import('../hooks/claude.js');
       await runCheckpointHook({ stateDir: hookStateDir() });
       return '';
     }, 400);

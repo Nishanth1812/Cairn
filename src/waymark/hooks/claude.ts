@@ -12,7 +12,7 @@ import { runGit, type WorkingTreeStatus } from '../core/gitstate/gitRunner.js';
 import { computeWorkingTreeFingerprint } from '../core/fingerprint/hasher.js';
 import { estimateTokens } from '../core/estimate/tokenEstimator.js';
 import { redactSafe } from '../core/security/redactor.js';
-import { runHookSafely } from '../integrations/claude-code/index.js';
+import { runHookSafely } from '../integrations/claude-code/safeHook.js';
 import type Database from 'better-sqlite3';
 
 const MARKER = 'weft-hook';
