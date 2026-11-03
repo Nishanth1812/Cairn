@@ -1,5 +1,6 @@
 import { stat } from 'node:fs/promises';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { existsSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { openDatabase } from '../storage/db.js';
 import { hookGitRoot, repoFor } from './claude.js';
 import { estimateTokens } from '../core/estimate/tokenEstimator.js';
@@ -30,6 +31,7 @@ export async function runPromptHook(options: { cwd?: string; stateDir: string; p
   if (!identifiers.length && !files.length && !words.length) return '';
   const root = await hookGitRoot(resolve(options.cwd ?? process.cwd()));
   if (!root) return '';
+  if (!existsSync(join(options.stateDir, 'weft.db'))) return '';
   const db = openDatabase(options.stateDir);
   try {
     const repo = repoFor(db, root);

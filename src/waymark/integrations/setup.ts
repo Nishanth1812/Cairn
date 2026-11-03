@@ -6,7 +6,7 @@ import { CODEX_GUIDELINES } from './codex/index.js';
 import { syncInstructions } from './instructions.js';
 
 export type Harness = 'claude-code' | 'codex' | 'opencode' | 't3';
-export type SetupOptions = { home: string; harnesses?: Harness[]; dryRun?: boolean; uninstall?: boolean; bin?: string };
+export type SetupOptions = { home: string; harnesses?: Harness[]; dryRun?: boolean; uninstall?: boolean; bin?: string; toolHints?: boolean };
 
 export async function setupWeft(options: SetupOptions) {
   const selected = options.harnesses ?? ['claude-code', 'codex', 'opencode'];
@@ -17,7 +17,7 @@ export async function setupWeft(options: SetupOptions) {
     if (!existsSync(dir)) continue;
     if (harness === 'claude-code') {
       const bin = options.bin ?? (process.argv[1] ? `node "${realpathSync(resolve(process.argv[1])).replace(/\\/g, '/')}"` : 'cairn waymark');
-      results.push(options.uninstall ? await uninstallClaudeHooks({ home: options.home, global: true, dryRun: options.dryRun }) : await installClaudeHooks({ home: options.home, global: true, dryRun: options.dryRun, bin }));
+      results.push(options.uninstall ? await uninstallClaudeHooks({ home: options.home, global: true, dryRun: options.dryRun }) : await installClaudeHooks({ home: options.home, global: true, dryRun: options.dryRun, bin, toolHints: options.toolHints }));
       if (options.uninstall) results.push(await syncInstructions(join(dir, 'CLAUDE.md'), '', options.dryRun));
       else results.push(await syncInstructions(join(dir, 'CLAUDE.md'), CLAUDE_CODE_GUIDELINES, options.dryRun));
     } else {

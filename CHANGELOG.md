@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Claude Code setup now installs SessionStart, UserPromptSubmit, Stop and PreCompact hooks by default; per-tool PreToolUse hints require `--tool-hints`. Re-running setup removes old Cairn PreToolUse entries while preserving other tools' hooks, and stats mark unobserved native sweeps as unavailable.
 - Claude Code PreToolUse hooks are advisory-only: they never deny tool calls, and at most two optional hints are shown per session for broad searches in indexed repos. Feedback is optional and unlocks nothing.
 - Concurrent first-use registration and index refreshes now share one writer; SQLite constraint errors are no longer reported as disk-full failures.
 - Lookups refresh file changes before answering, wait a bounded time for an active index writer, and label last-generation results if that wait expires.

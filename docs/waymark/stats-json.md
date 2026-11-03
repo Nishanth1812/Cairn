@@ -1,13 +1,14 @@
 # `cairn waymark stats --json`
 
-Shape returned by `getStats` (in `src/waymark/telemetry/stats.ts`), printed as JSON when `--json` is passed (and included in the `data` field of the `stats` command result). Counts come from the `tool_calls` table, written by real calls only: `search` and `context` when the CLI runs, `Read`, `Grep` and `Glob` from the PreToolUse hook in an indexed repo, and `hook_prompt` when the prompt hook injects locations.
+Shape returned by `getStats` (in `src/waymark/telemetry/stats.ts`), printed as JSON when `--json` is passed (and included in the `data` field of the `stats` command result). Counts come from the `tool_calls` table, written by real calls only: `search` and `context` when the CLI runs, native sweeps from the optional PreToolUse hook in an indexed repo, and `hook_prompt` when the prompt hook injects locations.
 
 Top-level fields:
 
-- `adoption` — `{ percent, weftCalls, nativeCalls }`
-  - `percent` — share of code lookups that went through Waymark: `weftCalls / (weftCalls + nativeCalls)`, rounded; `null` when there were no lookups
+- `adoption` — `{ percent, weftCalls, nativeCalls, nativeCallsObserved }`
+  - `percent` — share of observed code lookups that went through Waymark: `weftCalls / (weftCalls + nativeCalls)`, rounded; `null` when native sweep counts are unavailable or there were no lookups
   - `weftCalls` — `search` and `context` calls
-  - `nativeCalls` — sweeps only: `Grep`, `Glob`, grep/rg/find in Bash, and whole-file reads of large files. Counted whether or not the optional advisory is shown. Ranged `Read`s are the intended follow-up to a search and are not counted.
+  - `nativeCalls` — observed sweeps: `Grep`, `Glob`, grep/rg/find in Bash, and whole-file reads of large files. These counts require the opt-in `setup --tool-hints` PreToolUse hook; without it the value is `null` and `percent` is `null` when no native sweeps were observed. Ranged `Read`s are the intended follow-up to a search and are not counted.
+  - `nativeCallsObserved` — whether any native sweep events were recorded. With the default hook set, adoption can be incomplete because sweeps are not observed.
 - `toolTokens` — `{ calls, returned }` for `search` and `context`; `returned` is the estimated tokens of what the caller receives: the text the CLI prints (`formatSearch` / `formatContext`), or the JSON payload under `--json`
 - `promptHook` — `{ injections, returned }` for `hook_prompt`
 - `quality` — whether Waymark answered, from rows already written

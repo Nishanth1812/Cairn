@@ -163,7 +163,7 @@ export async function logHookFailure(stateDir: string, error: unknown): Promise<
 type Settings = { hooks?: Partial<Record<Event, Array<{ matcher?: string; hooks?: Array<Record<string, unknown>> }>>>; [key: string]: unknown };
 function hookEntry(event: Event, bin: string) { return { matcher: event === 'PreToolUse' ? 'Bash|Grep|Glob|Read' : '', hooks: [{ type: 'command', command: `${bin} hook ${event === 'SessionStart' ? 'session-start' : event === 'UserPromptSubmit' ? 'user-prompt-submit' : event === 'PreToolUse' ? 'pre-tool-use' : event === 'Stop' ? 'stop' : 'pre-compact'} # ${MARKER}` }] }; }
 function isWeftHook(hook: Record<string, unknown>) { return typeof hook.command === 'string' && hook.command.includes(`# ${MARKER}`); }
-export async function installClaudeHooks(options: { projectRoot?: string; home?: string; global?: boolean; dryRun?: boolean; bin?: string } = {}) {
+export async function installClaudeHooks(options: { projectRoot?: string; home?: string; global?: boolean; dryRun?: boolean; bin?: string; toolHints?: boolean } = {}) {
   const path = options.global ? join(options.home ?? homedir(), '.claude', 'settings.json') : join(options.projectRoot ?? process.cwd(), '.claude', 'settings.json');
   let settings: Settings = {};
   try { settings = JSON.parse(await readFile(path, 'utf8')) as Settings; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
@@ -171,8 +171,9 @@ export async function installClaudeHooks(options: { projectRoot?: string; home?:
   for (const event of EVENTS) {
     const entries = [...(updated.hooks?.[event] ?? [])];
     const cleaned = entries.map((entry) => ({ ...entry, hooks: (entry.hooks ?? []).filter((hook) => !isWeftHook(hook)) })).filter((entry) => (entry.hooks ?? []).length);
-    cleaned.push(hookEntry(event, options.bin ?? 'cairn waymark'));
-    updated.hooks![event] = cleaned;
+    if (event !== 'PreToolUse' || options.toolHints) cleaned.push(hookEntry(event, options.bin ?? 'cairn waymark'));
+    if (cleaned.length) updated.hooks![event] = cleaned;
+    else delete updated.hooks![event];
   }
   const content = `${JSON.stringify(updated, null, 2)}\n`;
   const before = await readFile(path, 'utf8').catch(() => '');

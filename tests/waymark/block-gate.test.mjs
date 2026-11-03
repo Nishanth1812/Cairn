@@ -72,13 +72,31 @@ test('a Waymark search from a subfolder of the repo works', () => {
   assert.equal(out.ok, true);
 });
 
-test('setup installs five lifecycle hooks and narrows PreToolUse to lookup tools', () => {
+test('default setup installs lifecycle hooks without per-tool hints', () => {
   mkdirSync(join(home, '.claude'), { recursive: true });
   execFileSync('node', ['--no-warnings', BIN, 'setup', '--harness', 'claude-code'], { cwd: repo, env, encoding: 'utf8' });
   const settings = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8'));
-  assert.deepEqual(Object.keys(settings.hooks).sort(), ['PreCompact', 'PreToolUse', 'SessionStart', 'Stop', 'UserPromptSubmit'].sort());
-  assert.equal(settings.hooks.PreToolUse[0].matcher, 'Bash|Grep|Glob|Read');
+  assert.deepEqual(Object.keys(settings.hooks).sort(), ['PreCompact', 'SessionStart', 'Stop', 'UserPromptSubmit'].sort());
   const instructions = readFileSync(join(home, '.claude', 'CLAUDE.md'), 'utf8');
   assert.match(instructions, /Grep\/Read remain fine/);
   assert.doesNotMatch(instructions, /denied|blocked until feedback/i);
+  const doctor = JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'doctor', '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
+  assert.equal(doctor.integrations.find((item) => item.id === 'claude-code hooks').status, 'installed');
+});
+
+test('opt-in hints preserve foreign PreToolUse entries and dry-run writes nothing', () => {
+  const settingsPath = join(home, '.claude', 'settings.json');
+  const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  settings.hooks.PreToolUse = [{ matcher: 'Bash|Grep|Glob|Read', hooks: [{ type: 'command', command: 'cairn waymark hook pre-tool-use # weft-hook' }, { type: 'command', command: 'other-tool # foreign' }] }];
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  const before = readFileSync(settingsPath, 'utf8');
+  execFileSync('node', ['--no-warnings', BIN, 'setup', '--harness', 'claude-code', '--dry-run'], { cwd: repo, env, encoding: 'utf8' });
+  assert.equal(readFileSync(settingsPath, 'utf8'), before);
+  execFileSync('node', ['--no-warnings', BIN, 'setup', '--harness', 'claude-code'], { cwd: repo, env, encoding: 'utf8' });
+  let cleaned = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  assert.deepEqual(cleaned.hooks.PreToolUse[0].hooks.map((hook) => hook.command), ['other-tool # foreign']);
+  execFileSync('node', ['--no-warnings', BIN, 'setup', '--harness', 'claude-code', '--tool-hints'], { cwd: repo, env, encoding: 'utf8' });
+  cleaned = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  assert.equal(cleaned.hooks.PreToolUse.find((entry) => entry.hooks.some((hook) => hook.command.includes('# weft-hook'))).matcher, 'Bash|Grep|Glob|Read');
+  assert.ok(cleaned.hooks.PreToolUse[0].hooks.some((hook) => hook.command === 'other-tool # foreign'));
 });

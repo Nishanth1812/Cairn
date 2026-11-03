@@ -149,7 +149,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
     const selected = (option(args, '--harness', 'claude-code,codex,opencode') ?? '').split(',');
     if (selected.some((value) => !['claude-code', 'codex', 'opencode', 't3'].includes(value))) fail('--harness must be claude-code,codex,opencode,or t3', 2);
     const dryRun = args.includes('--dry-run'), uninstall = args.includes('--uninstall');
-    const data = await setupWeft({ home, harnesses: selected as Harness[], dryRun, uninstall });
+    const data = await setupWeft({ home, harnesses: selected as Harness[], dryRun, uninstall, toolHints: args.includes('--tool-hints') });
     if (!dryRun) { const config = await loadConfig(); config.autoOnboard = !uninstall; await saveConfig(config); }
     return { code: 0, data };
   }
@@ -423,7 +423,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
     const db = database(); try {
       const stats = getStats(db, duration(option(args, '--since')));
       return { code: 0, data: compactOutput
-        ? `Adoption: ${stats.adoption.percent == null ? 'no lookups yet' : `${stats.adoption.percent}%`} of lookups through Waymark (${stats.adoption.weftCalls} search/context, ${stats.adoption.nativeCalls} Grep/Glob/Bash search/whole-file Read)
+        ? `Adoption: ${stats.adoption.percent == null ? 'incomplete (native sweep counts require --tool-hints)' : `${stats.adoption.percent}%`} of observed lookups through Waymark (${stats.adoption.weftCalls} search/context, ${stats.adoption.nativeCalls ?? 'unavailable'} Grep/Glob/Bash search/whole-file Read)
 Waymark returned: ${stats.toolTokens.returned} tokens
 Prompt hook: ${stats.promptHook.injections} injections, ${stats.promptHook.returned} tokens
 Read a returned file after a lookup: ${stats.quality.followThroughPercent == null ? 'n/a (no lookups with recorded paths yet)' : `${stats.quality.followThroughPercent}%`}
@@ -477,7 +477,7 @@ Fell back to a sweep after a lookup: ${stats.quality.fallbackPercent == null ? '
 }
 
 const VALUE_FLAGS = new Set(['--name', '--limit', '--budget', '--scope', '--since', '--source', '--suite', '--harness', '--repo', '--tasks', '--repeat', '--task', '--kind', '--refs', '--query', '--session']);
-export const KNOWN_FLAGS = new Set([...VALUE_FLAGS, '--force', '--repair', '--dry-run', '--keep-data', '--interactive', '--yes', '--global', '--suggest', '--uninstall', '--portable', '--exact']);
+export const KNOWN_FLAGS = new Set([...VALUE_FLAGS, '--force', '--repair', '--dry-run', '--keep-data', '--interactive', '--yes', '--global', '--suggest', '--uninstall', '--portable', '--exact', '--tool-hints']);
 
 function validateFlags(args: string[]): void {
   const valueFlags = VALUE_FLAGS;

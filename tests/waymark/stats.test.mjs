@@ -28,7 +28,7 @@ after(() => { rmSync(repo, { recursive: true, force: true }); rmSync(home, { rec
 
 test('a fresh state has no lookups and no adoption', () => {
   cli('init');
-  assert.deepEqual(stats(), { percent: null, weftCalls: 0, nativeCalls: 0 });
+  assert.deepEqual(stats(), { percent: null, weftCalls: 0, nativeCalls: null, nativeCallsObserved: false });
 });
 
 test('the baseline column is gone from the tool_calls table', () => {
@@ -39,10 +39,10 @@ test('the baseline column is gone from the tool_calls table', () => {
 
 test('search calls count as Waymark lookups, native sweeps count as native, ranged reads count as neither', () => {
   cli('search', 'computeInvoiceTotal');
-  assert.deepEqual(stats(), { percent: 100, weftCalls: 2, nativeCalls: 0 });
+  assert.deepEqual(stats(), { percent: null, weftCalls: 2, nativeCalls: null, nativeCallsObserved: false });
   preToolUse('Grep', { pattern: 'computeInvoiceTotal' }); // advisory output does not change native-call accounting
   preToolUse('Read', { file_path: join(repo, 'src', 'billing.js'), offset: 1, limit: 3 }); // ranged read after a search: not a miss
-  assert.deepEqual(stats(), { percent: 67, weftCalls: 2, nativeCalls: 1 });
+  assert.deepEqual(stats(), { percent: 67, weftCalls: 2, nativeCalls: 1, nativeCallsObserved: true });
 });
 
 test('a lookup followed by a sweep in the same session counts as a fallback; filed feedback is counted', () => {

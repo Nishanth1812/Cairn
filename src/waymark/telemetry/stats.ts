@@ -13,7 +13,8 @@ export function getStats(db: Database.Database, since?: string) {
   const weftCalls = sum(WEFT_TOOLS, 'calls'), nativeCalls = sum(NATIVE_TOOLS, 'calls');
   const hook = byTool.get('hook_prompt');
   return {
-    adoption: { percent: weftCalls + nativeCalls ? Math.round(100 * weftCalls / (weftCalls + nativeCalls)) : null, weftCalls, nativeCalls },
+    // Native sweep counts only exist when the optional per-tool hook was enabled; zero is not evidence that no sweeps happened.
+    adoption: { percent: nativeCalls ? Math.round(100 * weftCalls / (weftCalls + nativeCalls)) : null, weftCalls, nativeCalls: nativeCalls || null, nativeCallsObserved: nativeCalls > 0 },
     toolTokens: { calls: weftCalls, returned: sum(WEFT_TOOLS, 'returned') },
     promptHook: { injections: hook?.calls ?? 0, returned: hook?.returned ?? 0 },
     quality: qualityStats(db, since),
