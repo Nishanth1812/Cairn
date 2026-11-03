@@ -9,7 +9,7 @@ export function isStorageError(error: unknown): boolean {
   if (error instanceof StorageFailure) return true;
   const code = (error as { code?: string })?.code ?? '';
   const systemCode = (error as { code?: string })?.code ?? '';
-  return /^SQLITE_(FULL|READONLY|IOERR)/.test(code) || /^(ENOSPC|EROFS|EIO)$/.test(systemCode);
+  return /^SQLITE_(FULL|READONLY|IOERR)/.test(code) || /^(ENOSPC|EROFS|EACCES|EPERM|EIO)$/.test(systemCode);
 }
 
 export function freeSpaceBytes(stateDir: string): number {
@@ -25,9 +25,12 @@ export function storageFailure(stateDir: string, error: unknown, neededBytes: nu
   }
   const code = (error as { code?: string })?.code;
   const reason = code ? `${code}: ` : '';
-  const available = free === undefined ? 'unknown' : formatBytes(free);
+  const readOnly = code === 'SQLITE_READONLY' || code === 'EROFS' || code === 'EACCES' || code === 'EPERM';
+  const guidance = readOnly
+    ? 'The state directory or database is not writable. Check file and directory permissions or remount the filesystem writable, then retry.'
+    : `Free: ${free === undefined ? 'unknown' : formatBytes(free)}; estimated needed: about ${formatBytes(neededBytes)}. Free disk space, run \`cairn waymark clean --scope indexes --yes\`, or set a smaller maxTrackedFiles, then retry.`;
   return new StorageFailure(
-    `Storage error in Cairn state directory ${resolve(stateDir)} (${reason}${error instanceof Error ? error.message : String(error)}). Free: ${available}; estimated needed: about ${formatBytes(neededBytes)}. Free disk space, run \`cairn waymark clean --scope indexes --yes\`, or set a smaller maxTrackedFiles, then retry.`,
+    `Storage error in Cairn state directory ${resolve(stateDir)} (${reason}${error instanceof Error ? error.message : String(error)}). ${guidance}`,
     { cause: error },
   );
 }

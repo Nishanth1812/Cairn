@@ -10,7 +10,7 @@ interface Pattern {
 }
 
 const patterns: readonly Pattern[] = [
-  { type: 'pem-private-key', regex: /-----BEGIN\s+(?:RSA|DSA|EC|OPENSSH|PGP)\s+PRIVATE\s+KEY-----[\s\S]+?-----END\s+(?:RSA|DSA|EC|OPENSSH|PGP)\s+PRIVATE\s+KEY-----/g },
+  { type: 'pem-private-key', regex: /-----BEGIN\s+(?:(?:RSA|DSA|EC|OPENSSH|PGP)\s+)?(?:ENCRYPTED\s+)?PRIVATE\s+KEY-----[\s\S]+?-----END\s+(?:(?:RSA|DSA|EC|OPENSSH|PGP)\s+)?(?:ENCRYPTED\s+)?PRIVATE\s+KEY-----/g },
   { type: 'github-token', regex: /(?:ghp|gho|ghu|ghs|ghr)_[0-9a-zA-Z]{36,}/g },
   { type: 'github-token', regex: /github_pat_[a-zA-Z0-9_]{82}/g },
   { type: 'api-key-sk', regex: /sk-[a-zA-Z0-9]{20,}/g },
