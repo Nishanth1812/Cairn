@@ -14,6 +14,7 @@ const repo = mkdtempSync(join(base, 'repo-'));
 const home = mkdtempSync(join(base, 'waymark-home-'));
 const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'r'), LOCALAPPDATA: join(home, 'l'), XDG_CONFIG_HOME: join(home, 'c'), XDG_STATE_HOME: join(home, 's'), XDG_CACHE_HOME: join(home, 'k') };
 const search = (query) => JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'search', query, '--json'], { cwd: repo, env, encoding: 'utf8' })).data.map((hit) => hit.path);
+const searchOutput = (query) => execFileSync('node', ['--no-warnings', BIN, 'search', query, '--json'], { cwd: repo, env, encoding: 'utf8' });
 // Windows state layout (config/paths.ts) under the isolated LOCALAPPDATA.
 const builtAt = () => {
   const db = new Database(stateDbPath(home), { readonly: true, fileMustExist: true });
@@ -25,11 +26,18 @@ before(() => {
   mkdirSync(join(repo, 'src'));
   writeFileSync(join(repo, 'src', 'billing.js'), 'export function computeInvoiceTotal(items) {\n  return items.reduce((sum, item) => sum + item.price, 0);\n}\n');
   writeFileSync(join(repo, 'src', 'report.js'), 'import { computeInvoiceTotal } from "./billing.js";\nexport const monthly = (items) => computeInvoiceTotal(items) * 12; // computeInvoiceTotal computeInvoiceTotal\n');
+  writeFileSync(join(repo, 'src', 'private.js'), 'const key = `-----BEGIN PRIVATE KEY-----\nMIIE-secret-fixture-should-never-escape\n-----END PRIVATE KEY-----`;\nexport const genericPemProbe = key.length;\n');
 });
 after(() => { rmSync(repo, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
 
 test('an unregistered git repo is registered and indexed on first search, and the definition ranks first', () => {
   assert.equal(search('computeInvoiceTotal')[0], 'src/billing.js');
+});
+
+test('PKCS#8 private keys are redacted before search output', () => {
+  const output = searchOutput('genericPemProbe');
+  assert.match(output, /REDACTED_SECRET:pem-private-key/);
+  assert.doesNotMatch(output, /MIIE-secret-fixture-should-never-escape/);
 });
 
 test('an edited file is searchable immediately', () => {
