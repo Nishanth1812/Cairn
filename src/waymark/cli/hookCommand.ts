@@ -2,15 +2,15 @@ import { hookStateDir, logHookFailure, prefetchGitState, runCheckpointHook, runS
 import { runHookSafely } from '../integrations/claude-code/index.js';
 import { ensureRepoOnboarded } from '../onboarding/auto.js';
 
-type HookInput = { cwd?: string; prompt?: string; filePath?: string; ranged?: boolean; tool?: string; command?: string; session?: string };
+type HookInput = { cwd?: string; prompt?: string; filePath?: string; path?: string; pattern?: string; ranged?: boolean; tool?: string; command?: string; session?: string };
 async function readHookInput(timeoutMs = 150): Promise<HookInput> {
   if (process.stdin.isTTY) return {};
   return new Promise((done) => {
     let raw = '';
     const finish = () => { try {
-      const parsed = JSON.parse(raw) as { session_id?: unknown; agent_id?: unknown; cwd?: unknown; prompt?: unknown; tool_name?: unknown; tool_input?: { file_path?: unknown; offset?: unknown; limit?: unknown; command?: unknown } };
+      const parsed = JSON.parse(raw) as { session_id?: unknown; agent_id?: unknown; cwd?: unknown; prompt?: unknown; tool_name?: unknown; tool_input?: { file_path?: unknown; path?: unknown; pattern?: unknown; offset?: unknown; limit?: unknown; command?: unknown } };
       done({ session: typeof parsed.session_id === 'string' ? `${parsed.session_id}-${typeof parsed.agent_id === 'string' ? parsed.agent_id : ''}` : undefined, cwd: typeof parsed.cwd === 'string' ? parsed.cwd : undefined, prompt: typeof parsed.prompt === 'string' ? parsed.prompt : undefined,
-        filePath: typeof parsed.tool_input?.file_path === 'string' ? parsed.tool_input.file_path : undefined, ranged: parsed.tool_input?.offset != null || parsed.tool_input?.limit != null, tool: typeof parsed.tool_name === 'string' ? parsed.tool_name : undefined, command: typeof parsed.tool_input?.command === 'string' ? parsed.tool_input.command : undefined });
+        filePath: typeof parsed.tool_input?.file_path === 'string' ? parsed.tool_input.file_path : undefined, path: typeof parsed.tool_input?.path === 'string' ? parsed.tool_input.path : undefined, pattern: typeof parsed.tool_input?.pattern === 'string' ? parsed.tool_input.pattern : undefined, ranged: parsed.tool_input?.offset != null || parsed.tool_input?.limit != null, tool: typeof parsed.tool_name === 'string' ? parsed.tool_name : undefined, command: typeof parsed.tool_input?.command === 'string' ? parsed.tool_input.command : undefined });
     } catch { done({}); } };
     const timer = setTimeout(() => { process.stdin.pause(); finish(); }, timeoutMs);
     process.stdin.setEncoding('utf8').on('data', (chunk: string) => { raw += chunk; }).once('end', () => { clearTimeout(timer); finish(); });
@@ -26,7 +26,7 @@ export async function runHookCommand(event: string | undefined): Promise<{ code:
     const input: HookInput = event === 'user-prompt-submit' || event === 'pre-tool-use' ? await readHookInput() : {};
     if (event === 'session-start') prefetchGitState(process.cwd());
     const data = await runHookSafely(async () => {
-      if (event === 'pre-tool-use') return (await import('../hooks/prompt.js')).runReadNudge({ stateDir: hookStateDir(), cwd: input.cwd, filePath: input.filePath, ranged: input.ranged, tool: input.tool, command: input.command, session: input.session });
+      if (event === 'pre-tool-use') return (await import('../hooks/prompt.js')).runReadNudge({ stateDir: hookStateDir(), cwd: input.cwd, filePath: input.filePath, path: input.path, pattern: input.pattern, ranged: input.ranged, tool: input.tool, command: input.command, session: input.session });
       if (event === 'user-prompt-submit') return (await import('../hooks/prompt.js')).runPromptHook({ stateDir: hookStateDir(), cwd: input.cwd, prompt: input.prompt ?? '' });
       if (event === 'session-start') { const onboarded = await ensureRepoOnboarded(process.cwd());
         if (onboarded.reason === 'not-git') return (await import('../onboarding/workspace.js')).workspaceHint(process.cwd(), hookStateDir());

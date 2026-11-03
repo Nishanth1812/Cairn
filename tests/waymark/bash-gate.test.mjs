@@ -1,4 +1,4 @@
-// Black-box test of the Bash search gate: grep, rg and find in Bash count as sweeps; pipe filters and other Bash calls are not searches.
+// Black-box test that Bash searches remain allowed and advisory-only.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import Database from 'better-sqlite3';
@@ -25,7 +25,7 @@ const hook = (event) => {
 };
 const bash = (sessionId, command, cwd = repo) => hook({ session_id: sessionId, cwd, tool_name: 'Bash', tool_input: { command } });
 const read = (sessionId, filePath, ranged = false) => hook({ session_id: sessionId, cwd: repo, tool_name: 'Read', tool_input: ranged ? { file_path: filePath, offset: 1, limit: 20 } : { file_path: filePath } });
-const denied = (output) => output?.permissionDecision === 'deny';
+const allowed = (output) => output?.permissionDecision !== 'deny';
 const rowsFor = (session) => { const db = new Database(dbPath(), { readonly: true }); try { return db.prepare('SELECT tool FROM tool_calls WHERE session = ?').all(session); } finally { db.close(); } };
 
 before(() => {
@@ -38,19 +38,20 @@ before(() => {
 });
 after(() => { rmSync(repo, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
 
-test('the first two grep, rg or find commands are denied, then a third needs feedback', () => {
+test('broad Bash searches are allowed and receive at most two hints per session', () => {
   const session = 'bash-gate-a';
-  assert.ok(denied(bash(session, 'grep -rn computeInvoiceTotal src')), 'first search');
-  assert.ok(denied(bash(session, 'rg computeInvoiceTotal')), 'second search');
+  const first = bash(session, 'grep -rn computeInvoiceTotal src');
+  const second = bash(session, 'rg computeInvoiceTotal');
   const third = bash(session, 'find . -name "*.js"');
-  assert.ok(denied(third), 'third search without feedback');
-  assert.match(third.permissionDecisionReason, /Blocked:/);
-  assert.deepEqual(rowsFor(`${session}-`).map((row) => row.tool), ['Bash-search', 'Bash-search', 'Bash-search']);
+  assert.ok(allowed(first) && allowed(second) && allowed(third));
+  assert.ok(first.additionalContext && second.additionalContext);
+  assert.equal(third, null);
+  assert.deepEqual(rowsFor(`${session}-`).map((row) => row.tool), ['Bash-search', 'Bash-search', 'Bash-search', 'hook_advisory', 'hook_advisory']);
 });
 
-test('a search after a chained command is still gated', () => {
+test('a search after a chained command remains allowed', () => {
   const session = 'bash-gate-b';
-  assert.ok(denied(bash(session, 'cd src && grep -n total billing.js')));
+  assert.equal(bash(session, 'cd src && grep -n total billing.js'), null);
 });
 
 test('a pipe filter on another command is not a search and is not recorded', () => {
@@ -61,38 +62,39 @@ test('a pipe filter on another command is not a search and is not recorded', () 
   assert.deepEqual(rowsFor(`${session}-`), []);
 });
 
-test('filed feedback lets the agent run a search again', () => {
+test('feedback remains optional and broad searches continue without it', () => {
   const session = 'bash-gate-d';
   cliAs(session, 'search', 'computeInvoiceTotal'); // feedback must cite a query Waymark actually ran in this session
   bash(session, 'grep -r a .');
   bash(session, 'grep -r b .');
-  assert.ok(denied(bash(session, 'grep -r c .')));
+  const before = bash(session, 'grep -r c .');
+  assert.ok(allowed(before));
   cli('feedback', 'search for computeInvoiceTotal returned nothing', '--kind', 'miss', '--session', `${session}-`, '--query', 'computeInvoiceTotal');
-  assert.equal(denied(bash(session, 'grep -r c .')), false);
+  assert.ok(allowed(bash(session, 'grep -r c .')));
 });
 
-test('a whole-file read of a large file is gated', () => {
+test('a whole-file read of a large file may receive a rate-limited hint', () => {
   const session = 'read-gate-a';
   const big = join(repo, 'src', 'large.js');
-  assert.ok(denied(read(session, big)), 'first whole read');
-  assert.ok(denied(read(session, big)), 'second whole read');
-  assert.ok(denied(read(session, big)), 'third whole read without feedback');
-  assert.deepEqual(rowsFor(`${session}-`).map((row) => row.tool).sort(), ['Read-whole', 'Read-whole', 'Read-whole']);
+  assert.equal(read(session, big)?.permissionDecision, undefined);
+  assert.equal(read(session, big)?.permissionDecision, undefined);
+  assert.equal(read(session, big), null);
+  assert.deepEqual(rowsFor(`${session}-`).map((row) => row.tool).sort(), ['Read-whole', 'Read-whole', 'Read-whole', 'hook_advisory', 'hook_advisory'].sort());
 });
 
 test('a ranged read and a small file are not sweeps', () => {
   const session = 'read-gate-b';
-  assert.equal(denied(read(session, join(repo, 'src', 'large.js'), true)), false, 'ranged read');
-  assert.equal(denied(read(session, join(repo, 'src', 'billing.js'))), false, 'small file');
+  assert.equal(read(session, join(repo, 'src', 'large.js'), true), null, 'ranged read');
+  assert.equal(read(session, join(repo, 'src', 'billing.js')), null, 'small file');
   assert.deepEqual(rowsFor(`${session}-`).map((row) => row.tool).sort(), ['Read', 'Read']);
 });
 
-test('a repo Waymark has not indexed is gated too', () => {
+test('an unindexed repo receives no hint and is never indexed by the hook', () => {
   const other = mkdtempSync(join(base, 'unindexed-'));
   mkdirSync(join(other, '.git'));
   const decision = bash('unindexed-gate', 'grep -r needle .', other);
-  assert.ok(denied(decision));
-  assert.match(decision.permissionDecisionReason, /indexes the repo on first use/);
+  assert.ok(allowed(decision));
+  assert.equal(decision, null);
   rmSync(other, { recursive: true, force: true });
 });
 
@@ -109,6 +111,6 @@ test('a search of a file outside the repo is not a code search and is not record
   assert.equal(bash(session, `grep -n error ${log} | head -5`), null);
   assert.equal(bash(session, `find ${home} -name "*.log"`), null);
   assert.deepEqual(rowsFor(`${session}-`), []);
-  assert.ok(denied(bash(session, `grep -rn computeInvoiceTotal src ${log}`)), 'a repo path alongside keeps it a code search');
-  assert.ok(denied(bash(session, 'grep -rn computeInvoiceTotal')), 'no path searches the repo');
+  assert.ok(allowed(bash(session, `grep -rn computeInvoiceTotal src ${log}`)), 'a repo path alongside stays allowed');
+  assert.ok(allowed(bash(session, 'grep -rn computeInvoiceTotal')), 'no path searches the repo and stays allowed');
 });

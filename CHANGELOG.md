@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Claude Code PreToolUse hooks are advisory-only: they never deny tool calls, and at most two optional hints are shown per session for broad searches in indexed repos. Feedback is optional and unlocks nothing.
 - Concurrent first-use registration and index refreshes now share one writer; SQLite constraint errors are no longer reported as disk-full failures.
 - FTS search no longer stores per-chunk copies of search text and symbol names; indexing estimates free space, reports storage failures clearly, and rolls back failed generations.
 - `search --refs <symbol>` lists individual import, re-export, call, and module-level sites grouped by file and enclosing symbol; capped lookup modes report omitted result counts. Reference matching uses identifier spelling, so same-name collisions can add results.

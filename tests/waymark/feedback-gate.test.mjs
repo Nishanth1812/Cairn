@@ -1,4 +1,4 @@
-// Black-box test of the sweep gate and `feedback`: runs the built CLI and its hook against a throwaway git repo and an isolated state directory.
+// Black-box test of advisory-only PreToolUse and optional feedback storage.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -30,18 +30,27 @@ before(() => {
 });
 after(() => { rmSync(repo, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
 
-test('the first two sweeps of an agent are denied with its key and the feedback command', () => {
+test('broad sweeps remain allowed and receive no more than two concise hints', () => {
+  let hints = 0;
   for (let attempt = 1; attempt <= 2; attempt++) {
     const output = grep('gate-test');
-    assert.equal(denied(output), true, `attempt ${attempt} should be denied`);
-    assert.match(output.permissionDecisionReason, /cairn waymark feedback --session "gate-test-"/);
+    assert.equal(denied(output), false);
+    if (output?.additionalContext) {
+      hints++;
+      assert.ok(output.additionalContext.split(/\s+/).length <= 40);
+    }
   }
+  assert.equal(hints, 2);
 });
 
-test('a third sweep without feedback is blocked until feedback is filed', () => {
-  const output = grep('gate-test');
-  assert.equal(denied(output), true);
-  assert.match(output.permissionDecisionReason, /Blocked:/);
+test('30 consecutive broad sweeps in one session never deny and cap hints at two', () => {
+  let hints = 0;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const output = grep('flood-session');
+    assert.equal(denied(output), false);
+    if (output?.additionalContext) hints++;
+  }
+  assert.ok(hints <= 2, `${hints} hints were returned`);
 });
 
 test('feedback needs a kind and a note', () => {
@@ -49,17 +58,21 @@ test('feedback needs a kind and a note', () => {
   assert.throws(() => cli('feedback', '--kind', 'miss', '--session', 'gate-test-'), /Command failed/);
 });
 
-test('feedback is stored and lets that agent go on with Grep', () => {
-  cliAs('gate-test', 'search', 'computeInvoiceTotal'); // feedback must cite a query this session actually ran
-  const recorded = cli('feedback', 'search missed computeInvoiceTotal, grep needed', '--kind', 'miss', '--session', 'gate-test-', '--query', 'computeInvoiceTotal');
+test('feedback remains optional and is still stored', () => {
+  cliAs('feedback-session', 'search', 'computeInvoiceTotal');
+  const recorded = cli('feedback', 'search missed computeInvoiceTotal, grep needed', '--kind', 'miss', '--session', 'feedback-session-', '--query', 'computeInvoiceTotal');
   assert.equal(recorded.kind, 'miss');
-  const output = grep('gate-test');
+  const output = grep('feedback-session');
   assert.equal(denied(output), false);
-  assert.match(output.additionalContext, /Waymark can search this repo/);
 });
 
-test('another agent has its own sweep count and is not affected by the first one', () => {
-  const output = grep('gate-test', 'sub1'); // a subagent of the same session: key "gate-test-sub1"
-  assert.equal(denied(output), true);
-  assert.match(output.permissionDecisionReason, /cairn waymark feedback --session "gate-test-sub1"/);
+test('a narrow exact-path Grep gets no hint and remains allowed', () => {
+  const output = execFileSync('node', ['--no-warnings', BIN, 'hook', 'pre-tool-use'], { cwd: repo, env, encoding: 'utf8', input: JSON.stringify({ session_id: 'narrow-session', cwd: repo, tool_name: 'Grep', tool_input: { pattern: 'computeInvoiceTotal', path: join(repo, 'src', 'billing.js') } }) });
+  assert.equal(output, '');
+});
+
+test('another agent has an independent hint allowance', () => {
+  const output = grep('gate-test', 'sub1');
+  assert.equal(denied(output), false);
+  assert.ok(output?.additionalContext);
 });

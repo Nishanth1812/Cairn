@@ -45,7 +45,7 @@ Add `--json` for machine output. `cairn waymark --help` lists every command.
 
 1. **Index.** Files are chunked along symbol boundaries and split above 60 lines or about 600 tokens. SQLite FTS5 weights file paths and symbol names above body mentions. Ignored files, binaries, and sensitive paths (`.env*`, keys) are skipped.
 2. **Rank.** BM25 plus boosts for exact symbol definitions, path matches, referenced definitions and intent notes; tests, docs and import-only chunks are demoted unless the query asks for them. Class or function definition queries return matching symbols; route and page queries use file paths.
-3. **Hooks.** For Claude Code, Waymark hooks suggest a lookup before a broad `grep`/`find`. A first sweep is denied with the lookup to run; filing feedback (`cairn waymark feedback`) unlocks the sweep, so the agent is never trapped.
+3. **Hooks.** For Claude Code, PreToolUse may offer up to two short lookup hints per session for broad searches in indexed repos. Hooks are advisory-only; all tools stay available, and feedback remains optional.
 
 State lives in the OS state directory (`%LOCALAPPDATA%\weft\state` on Windows, `$XDG_STATE_HOME/weft` elsewhere). `cairn waymark clean --yes` prunes stale index data; `cairn waymark setup --uninstall` removes the hooks and managed instruction blocks.
 

@@ -4,11 +4,10 @@ import { openDatabase } from '../storage/db.js';
 import { hookGitRoot, repoFor } from './claude.js';
 import { estimateTokens } from '../core/estimate/tokenEstimator.js';
 import { redactSafe } from '../core/security/redactor.js';
-import { refreshIndex } from '../indexer/refresh.js';
 import { recordToolCall } from '../telemetry/toolCalls.js';
 import { migrate } from '../storage/migrator.js';
 
-const MAX_LOCATIONS = 6;
+const MAX_LOCATIONS = 3;
 const MAX_TOKENS = 350;
 const isIdentifier = (word: string) => /[a-z][A-Z]/.test(word) || word.includes('_') || (/\d/.test(word) && /[A-Za-z]/.test(word));
 
@@ -19,7 +18,7 @@ export function promptTerms(prompt: string): { identifiers: string[]; files: str
   return {
     identifiers: tokens.filter(isIdentifier).slice(0, 12),
     files: files.slice(0, 6),
-    words: tokens.filter((word) => word.length >= 5 && !isIdentifier(word)).map((word) => word.toLowerCase()).slice(0, 15),
+    words: tokens.filter((word) => word.length >= 5 && !isIdentifier(word)).map((word) => word.toLowerCase()).slice(0, 6),
   };
 }
 
@@ -35,7 +34,6 @@ export async function runPromptHook(options: { cwd?: string; stateDir: string; p
   try {
     const repo = repoFor(db, root);
     if (!repo) return '';
-    await refreshIndex(db, repo.id, root, { reindex: false }); // stale line numbers would mislead; a patch is a few stats
     const started = Date.now();
     const generation = (db.prepare('SELECT active_generation AS g FROM repo_index_state WHERE repo_id = ?').get(repo.id) as { g: number | null } | undefined)?.g;
     if (generation == null) return '';
@@ -61,19 +59,16 @@ export async function runPromptHook(options: { cwd?: string; stateDir: string; p
     if (!picked.length) return '';
     let list = picked.map((hit) => hit.line).join('\n');
     while (estimateTokens(list) > MAX_TOKENS && picked.length > 1) { picked.pop(); list = picked.map((hit) => hit.line).join('\n'); }
-    const text = redactSafe(`Weft located what this request names (Read just those line ranges with offset and limit, or run cairn waymark context "<question>", instead of grepping or reading whole files):\n${list}`);
+    const text = redactSafe(`Cairn matched names in this request:\n${list}`);
     try { recordToolCall(db, { repoId: repo.id, tool: 'hook_prompt', session: null, returnedTokens: estimateTokens(text), ms: Date.now() - started }); } catch { /* Telemetry must not interrupt the session. */ }
     return text;
   } finally { db.close(); }
 }
 
 const LARGE_READ_BYTES = 32 * 1024;
-// Native lookups an agent may run before it files feedback; every feedback buys this many more.
-const SWEEP_DENIALS = 2;
+const MAX_ADVISORIES = 2;
 // Binary files are not text lookups: Waymark cannot search them, and opening a screenshot is not a sweep.
 const BINARY_FILE = /\.(?:png|jpe?g|gif|webp|bmp|ico|svg|pdf)$/i;
-
-const deny = (reason: string) => JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
 
 // A Bash command that searches files: grep, rg, ag or find as its first word of a command, after an optional sudo or xargs. A pipe filter ("npm test | grep fail") is not a search.
 const BASH_SEARCH = /^(?:(?:sudo|xargs)\s+)?(?:e?grep|fgrep|rg|ag|find)(?=\s|$)/;
@@ -102,57 +97,71 @@ export function searchesOutsideRepo(command: string, cwd: string, root: string |
   });
 }
 
-// Waymark's own commands stay open to a blocked agent: they are how it searches and files feedback. Quoted text (a feedback note) may hold anything; chaining or redirecting may not.
-const WAYMARK_COMMAND = /^cairn waymark (?:search|context|feedback|stats)(?:\s|$)/;
-export function isWaymarkCommand(command: string): boolean {
-  const trimmed = command.trim();
-  return WAYMARK_COMMAND.test(trimmed) && !/[&;|`\n<>]|\$\(/.test(trimmed.replace(/"[^"]*"|'[^']*'/g, '""'));
-}
-
 const BASH_SEARCH_TOOL = 'Bash-search';
-// A whole-file read of a large file: recorded apart from small reads so the gate and stats can tell them apart.
+// A whole-file read of a large file is counted separately for adoption statistics.
 const WHOLE_READ_TOOL = 'Read-whole';
-// Lookups that count toward an agent's allowance.
 const SWEEP_TOOLS = ['Grep', 'Glob', BASH_SEARCH_TOOL, WHOLE_READ_TOOL];
 
-/** PreToolUse(*): every native lookup is counted per agent (subagents included). A file search (Grep, Glob, grep/rg/find in Bash) or a whole-file read of a large file is a sweep. An agent gets SWEEP_DENIALS sweeps before it must file feedback, and each feedback buys SWEEP_DENIALS more. Past that allowance every tool is blocked except Waymark's own commands, so the agent cannot move on without saying what went wrong. Repos Waymark has not indexed are gated too; the denial points at `cairn waymark search`, which indexes them on first use. */
-export async function runReadNudge(options: { cwd?: string; stateDir: string; filePath?: string; ranged?: boolean; tool?: string; command?: string; session?: string }): Promise<string> {
+const ADVISORY = 'Cairn can answer this: cairn waymark context "<question>" (ranked, token-budgeted). Use grep/read freely for exact strings.';
+const hasWildcard = (path: string) => /[*?{}\[\]]/.test(path);
+
+async function exactFilePath(path: string | undefined, cwd: string): Promise<boolean> {
+  if (!path || hasWildcard(path)) return false;
+  const info = await stat(resolve(cwd, path)).catch(() => undefined);
+  return !info || info.isFile();
+}
+
+async function isBroadSweep(options: { cwd: string; tool?: string; command: string; filePath?: string; ranged?: boolean; path?: string; pattern?: string }, root: string | null, whole: boolean): Promise<boolean> {
+  if (options.tool === 'Read') return whole;
+  if (options.tool === 'Grep') return !await exactFilePath(options.path, options.cwd);
+  if (options.tool === 'Glob') return hasWildcard(options.pattern ?? '') || !await exactFilePath(options.pattern, options.cwd);
+  if (options.tool !== 'Bash' || !isBashSearch(options.command) || searchesOutsideRepo(options.command, options.cwd, root)) return false;
+  const segments = options.command.split(/&&|\|\||;|\n|\(/).map((segment) => segment.trim()).filter((segment) => BASH_SEARCH.test(segment));
+  for (const segment of segments) {
+    const tokens = (segment.split('|')[0]!.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).filter((token) => !/^\d*[<>&]/.test(token));
+    const grepLike = /^(?:(?:sudo|xargs)\s+)?(?:e?grep|fgrep|rg|ag)(?=\s|$)/.test(segment);
+    const words = tokens.slice(1).filter((token) => !token.startsWith('-'));
+    const paths = grepLike ? words.slice(1) : words.slice(0, Math.max(0, words.findIndex((token) => /^[-!(]/.test(token)) < 0 ? words.length : words.findIndex((token) => /^[-!(]/.test(token))));
+    if (!paths.length) return true;
+    for (const path of paths) if (hasWildcard(path) || !await exactFilePath(path.replace(/^['"]|['"]$/g, ''), options.cwd)) return true;
+  }
+  return false;
+}
+
+/** PreToolUse records native lookup telemetry and may offer two optional, per-session hints in indexed repos. */
+export async function runReadNudge(options: { cwd?: string; stateDir: string; filePath?: string; path?: string; pattern?: string; ranged?: boolean; tool?: string; command?: string; session?: string }): Promise<string> {
   const command = options.command ?? '';
-  if (options.tool === 'Bash' && isWaymarkCommand(command)) return '';
+  const cwd = resolve(options.cwd ?? process.cwd());
   const binary = BINARY_FILE.test(options.filePath ?? '');
   const lockOrMinified = /(?:lock\.json|\.lock|\.min\.\w+|\.map)$/i.test(options.filePath ?? '');
-  const size = options.tool === 'Read' && !binary && !options.ranged && options.filePath && !lockOrMinified ? await stat(options.filePath).then((info) => (info.isFile() ? info.size : 0), () => 0) : 0;
+  const size = options.tool === 'Read' && !binary && !options.ranged && options.filePath && !lockOrMinified ? await stat(resolve(cwd, options.filePath)).then((info) => (info.isFile() ? info.size : 0), () => 0) : 0;
   const whole = size >= LARGE_READ_BYTES;
-  const root = await hookGitRoot(resolve(options.cwd ?? process.cwd()));
+  const root = await hookGitRoot(cwd);
   const lookup = options.tool === 'Bash' ? (isBashSearch(command) && !searchesOutsideRepo(command, resolve(options.cwd ?? process.cwd()), root) ? BASH_SEARCH_TOOL : undefined)
     : options.tool === 'Read' ? (binary ? undefined : whole ? WHOLE_READ_TOOL : 'Read')
       : options.tool === 'Grep' || options.tool === 'Glob' ? options.tool : undefined;
   const sweep = lookup !== undefined && SWEEP_TOOLS.includes(lookup);
+  const broad = sweep && await isBroadSweep({ cwd, tool: options.tool, command, filePath: options.filePath, ranged: options.ranged, path: options.path, pattern: options.pattern }, root, whole);
   // Where a Read landed, relative to the repo, so stats can tell whether the agent read a file a lookup returned.
   const relativeRead = options.tool === 'Read' && options.filePath && root ? relative(root, resolve(options.cwd ?? process.cwd(), options.filePath)).split(sep).join('/') : '';
   const readPaths = relativeRead && !relativeRead.startsWith('..') ? [relativeRead] : undefined;
   const db = openDatabase(options.stateDir);
-  let sweeps = 0, feedback = 0;
+  let advisory = false;
   try {
     migrate(db); // the hook can run before any CLI command has migrated this database
     const repoId = root ? repoFor(db, root)?.id ?? null : null;
-    // Lookups are recorded only in a git checkout. Sweeps count even in a repo Waymark has not indexed yet; other lookups only where it has.
     if (lookup && root && (repoId || sweep)) { try { recordToolCall(db, { repoId, tool: lookup, session: options.session ?? null, returnedTokens: 0, ms: null, paths: readPaths }); } catch { /* Telemetry must not interrupt the session. */ } }
-    if (options.session) {
-      sweeps = (db.prepare(`SELECT COUNT(*) AS n FROM tool_calls WHERE session = ? AND tool IN (${SWEEP_TOOLS.map(() => '?').join(', ')})`).get(options.session, ...SWEEP_TOOLS) as { n: number }).n;
-      feedback = (db.prepare('SELECT COUNT(*) AS n FROM lookup_feedback WHERE session = ?').get(options.session) as { n: number }).n;
+    if (broad && options.session && repoId) {
+      const indexed = (db.prepare('SELECT active_generation AS generation FROM repo_index_state WHERE repo_id = ?').get(repoId) as { generation: number | null } | undefined)?.generation;
+      if (indexed != null) {
+        advisory = db.transaction(() => {
+          const count = (db.prepare("SELECT COUNT(*) AS n FROM tool_calls WHERE session = ? AND tool = 'hook_advisory'").get(options.session) as { n: number }).n;
+          if (count >= MAX_ADVISORIES) return false;
+          recordToolCall(db, { repoId, tool: 'hook_advisory', session: options.session!, returnedTokens: 0, ms: null });
+          return true;
+        }).immediate();
+      }
     }
   } finally { db.close(); }
-  if (options.session) {
-    const allowance = SWEEP_DENIALS * (1 + feedback);
-    const file = `cairn waymark feedback --session "${options.session}" --query "<the cairn waymark search you ran>" --kind miss|bad_output|error "<what went wrong>"`;
-    if (sweeps > allowance) return deny(`Blocked: this agent has run ${sweeps} native lookups and filed ${feedback} feedback, which covers ${allowance}. Until it files feedback, every tool is blocked except cairn waymark search, context, feedback and stats. Run \`cairn waymark search "<term>"\` on the lookup, then file what went wrong with \`${file}\`.`);
-    if (sweep && !feedback && sweeps <= SWEEP_DENIALS) return deny(`Waymark can search this repo. Run \`cairn waymark search "<term>"\` (it indexes the repo on first use) or \`cairn waymark context "<question>"\` first. If it misses or returns bad output, file that with \`${file}\`, then repeat this lookup.`);
-  }
-  if (!sweep) return '';
-  const tokens = Math.ceil(size / 4 * 1.1);
-  const additionalContext = whole
-    ? `This file is about ${Math.round(tokens / 1000)}K tokens and every later turn re-reads it from context. Run cairn waymark search "<term>" to find the part you need, then Read with offset and limit.`
-    : 'Waymark can search this repo: run `cairn waymark search "<term>"` or `cairn waymark context "<question>"` first (ranked, token-budgeted); use Grep, Glob or a Bash grep/rg/find only for an exact string it missed.';
-  return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext } });
+  return advisory ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: ADVISORY } }) : '';
 }

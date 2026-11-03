@@ -7,7 +7,7 @@ Top-level fields:
 - `adoption` — `{ percent, weftCalls, nativeCalls }`
   - `percent` — share of code lookups that went through Waymark: `weftCalls / (weftCalls + nativeCalls)`, rounded; `null` when there were no lookups
   - `weftCalls` — `search` and `context` calls
-  - `nativeCalls` — sweeps only: `Grep`, `Glob`, grep/rg/find in Bash, and whole-file reads of large files. Counted before the hook's early returns, so a sweep the gate denies still counts. Ranged `Read`s are the intended follow-up to a search and are not counted.
+  - `nativeCalls` — sweeps only: `Grep`, `Glob`, grep/rg/find in Bash, and whole-file reads of large files. Counted whether or not the optional advisory is shown. Ranged `Read`s are the intended follow-up to a search and are not counted.
 - `toolTokens` — `{ calls, returned }` for `search` and `context`; `returned` is the estimated tokens of what the caller receives: the text the CLI prints (`formatSearch` / `formatContext`), or the JSON payload under `--json`
 - `promptHook` — `{ injections, returned }` for `hook_prompt`
 - `quality` — whether Waymark answered, from rows already written
