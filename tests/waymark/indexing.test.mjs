@@ -79,7 +79,86 @@ test('concurrent first lookups return a bounded indexing notice and share one in
   }
 });
 
-test('a failed full-disk index preserves the active generation and can be retried', () => {
+test('parallel first lookups and a hook register and index one fresh repository', async () => {
+  const repo = mkdtempSync(join(base, 'parallel-first-repo-'));
+  const home = mkdtempSync(join(base, 'parallel-first-home-'));
+  const env = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: join(home, 'r'),
+    LOCALAPPDATA: join(home, 'l'),
+    XDG_CONFIG_HOME: join(home, 'c'),
+    XDG_STATE_HOME: join(home, 's'),
+    XDG_CACHE_HOME: join(home, 'k'),
+    CAIRN_INDEX_WAIT_MS: '1',
+  };
+  try {
+    execFileSync('git', ['init', '--quiet', '--separate-git-dir', join(home, 'repo-git')], { cwd: repo });
+    mkdirSync(join(repo, 'src'));
+    mkdirSync(join(repo, 'lib'));
+    for (let i = 0; i < 300; i++) writeFileSync(join(repo, 'src', `module-${i}.js`), `export function parallelNeedle${i}() { return ${i}; }\n`);
+    writeFileSync(join(repo, 'lib', 'entry.js'), 'export function parallelHookNeedle() { return 1; }\n');
+    execFileSync('git', ['add', 'src', 'lib'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'fixture'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('node', ['--no-warnings', cli, 'init'], { env, encoding: 'utf8' });
+
+    const lookups = Array.from({ length: 8 }, (_, index) => exec('node', ['--no-warnings', cli, 'search', 'parallelNeedle', '--json'], {
+      cwd: join(repo, index % 2 ? 'lib' : 'src'), env, encoding: 'utf8', windowsHide: true,
+    }));
+    const hook = exec('node', ['--no-warnings', cli, 'hook', 'user-prompt-submit'], {
+      cwd: repo, env, encoding: 'utf8', windowsHide: true, input: JSON.stringify({ prompt: 'parallelHookNeedle', cwd: repo }),
+    });
+    const settled = await Promise.allSettled([...lookups, hook]);
+    for (const outcome of settled) {
+      assert.equal(outcome.status, 'fulfilled', outcome.status === 'rejected' ? `${outcome.reason.stderr ?? ''}${outcome.reason.stdout ?? ''}${outcome.reason.message}` : '');
+    }
+    for (const outcome of settled.slice(0, 8)) assert.equal(JSON.parse(outcome.value.stdout).ok, true);
+    assert.doesNotMatch(settled[8].value.stderr, /SqliteError|SQLITE_|database or disk is full|stack/i);
+
+    const dbPath = stateDbPath(home);
+    const deadline = Date.now() + 30_000;
+    let db;
+    while (Date.now() < deadline) {
+      db = new Database(dbPath, { readonly: true });
+      const active = db.prepare('SELECT COUNT(*) AS n FROM repo_index_state').get().n;
+      if (active) break;
+      db.close();
+      db = undefined;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.ok(db, 'background indexing must finish');
+    try {
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM repositories').get().n, 1);
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM index_generations WHERE status = \'ready\'').get().n, 1);
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM index_generations WHERE status = \'building\'').get().n, 0);
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM repo_index_state').get().n, 1);
+      assert.equal(db.prepare("SELECT g.status FROM repo_index_state s JOIN index_generations g ON g.id = s.active_generation").get().status, 'ready');
+      assert.equal(db.pragma('quick_check', { simple: true }), 'ok');
+    } finally { db.close(); }
+
+    writeFileSync(join(repo, 'lib', 'entry.js'), 'export function parallelHookNeedle() { return 2; }\n');
+    const refreshes = await Promise.all(Array.from({ length: 6 }, () => exec('node', ['--no-warnings', cli, 'search', 'parallelHookNeedle', '--json'], {
+      cwd: repo, env, encoding: 'utf8', windowsHide: true,
+    })));
+    for (const result of refreshes) {
+      const response = JSON.parse(result.stdout);
+      assert.equal(response.ok, true);
+      assert.match(JSON.stringify(response.data), /lib[/\\]entry\.js/);
+    }
+    const check = new Database(dbPath, { readonly: true });
+    try {
+      assert.equal(check.prepare('SELECT COUNT(*) AS n FROM index_generations WHERE status = \'ready\'').get().n, 1);
+      assert.equal(check.prepare('SELECT COUNT(*) AS n FROM index_generations WHERE status = \'building\'').get().n, 0);
+      assert.equal(check.pragma('quick_check', { simple: true }), 'ok');
+    } finally { check.close(); }
+  } finally {
+    rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('constraint errors mentioning disk space stay distinct and failed index writes preserve the active generation', () => {
   const repo = mkdtempSync(join(base, 'index-full-repo-'));
   const home = mkdtempSync(join(base, 'index-full-home-'));
   const env = {
@@ -120,10 +199,7 @@ test('a failed full-disk index preserves the active generation and can be retrie
     assert.ok(failure, 'indexing must fail when SQLite reports a full disk');
     assert.notEqual(failure.status, 0);
     const message = String(failure.stderr);
-    assert.match(message, /state directory/i);
-    assert.match(message, /free.*needed/i);
-    assert.match(message, /clean --scope indexes --yes/);
-    assert.match(message, /maxTrackedFiles/);
+    assert.doesNotMatch(message, /state directory|free:|estimated needed|clean --scope indexes/i);
 
     const check = new Database(dbPath);
     try {
@@ -145,13 +221,8 @@ test('a failed full-disk index preserves the active generation and can be retrie
     const telemetry = new Database(dbPath);
     try { telemetry.exec("CREATE TRIGGER simulate_telemetry_full BEFORE INSERT ON tool_calls BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END"); }
     finally { telemetry.close(); }
-    let telemetryFailure;
-    try { execFileSync('node', ['--no-warnings', cli, 'search', 'retryDiskProbe', '--json'], { cwd: repo, env, encoding: 'utf8' }); }
-    catch (error) { telemetryFailure = error; }
-    assert.ok(telemetryFailure);
-    assert.notEqual(telemetryFailure.status, 0);
-    assert.match(String(telemetryFailure.stdout), /state directory.*free.*needed/i);
-    assert.match(String(telemetryFailure.stdout), /clean --scope indexes --yes/);
+    const telemetryResult = execFileSync('node', ['--no-warnings', cli, 'search', 'retryDiskProbe', '--json'], { cwd: repo, env, encoding: 'utf8' });
+    assert.equal(JSON.parse(telemetryResult).ok, true, 'a trigger constraint should not be reported as disk full or interrupt lookup telemetry');
 
     const hook = execFileSync('node', ['--no-warnings', cli, 'hook', 'user-prompt-submit'], {
       cwd: repo, env, encoding: 'utf8', input: JSON.stringify({ prompt: 'retryDiskProbe', cwd: repo }),

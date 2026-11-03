@@ -8,9 +8,8 @@ export class StorageFailure extends Error {
 export function isStorageError(error: unknown): boolean {
   if (error instanceof StorageFailure) return true;
   const code = (error as { code?: string })?.code ?? '';
-  const message = error instanceof Error ? error.message : String(error);
   const systemCode = (error as { code?: string })?.code ?? '';
-  return /^SQLITE_(FULL|READONLY|IOERR)/.test(code) || /^(ENOSPC|EROFS|EIO)$/.test(systemCode) || /database or disk is full|disk is full|no space left|read.only database|input\/output error|i\/o error/i.test(message);
+  return /^SQLITE_(FULL|READONLY|IOERR)/.test(code) || /^(ENOSPC|EROFS|EIO)$/.test(systemCode);
 }
 
 export function freeSpaceBytes(stateDir: string): number {

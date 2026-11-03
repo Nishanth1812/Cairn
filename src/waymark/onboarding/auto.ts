@@ -26,13 +26,17 @@ export async function ensureRepoOnboarded(cwd: string, options: { stateDir?: str
   const db = openDatabase(stateDir);
   try {
     migrate(db);
-    const existing = db.prepare('SELECT id FROM repositories WHERE lower(root_path) = lower(?)').get(rootPath) as { id: string } | undefined;
-    if (existing) return { onboarded: false, reason: 'registered', id: existing.id };
-    const id = randomUUID(), now = new Date().toISOString(), name = basename(rootPath);
-    db.prepare('INSERT INTO repositories (id, root_path, display_name, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)').run(id, rootPath, name, now, now);
+    const registration = db.transaction(() => {
+      const existing = db.prepare('SELECT id FROM repositories WHERE lower(root_path) = lower(?)').get(rootPath) as { id: string } | undefined;
+      if (existing) return { id: existing.id, created: false };
+      const id = randomUUID(), now = new Date().toISOString(), name = basename(rootPath);
+      db.prepare('INSERT INTO repositories (id, root_path, display_name, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)').run(id, rootPath, name, now, now);
+      return { id, created: true };
+    }).immediate();
+    if (!registration.created) return { onboarded: false, reason: 'registered', id: registration.id };
     const cli = options.cliPath ?? process.argv[1];
-    if (cli && options.spawnIndex !== false) (options.spawnChild ?? spawn)(process.execPath, [cli, 'index', id], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-    return { onboarded: true, id, rootPath };
+    if (cli && options.spawnIndex !== false) (options.spawnChild ?? spawn)(process.execPath, [cli, 'index', registration.id], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    return { onboarded: true, id: registration.id, rootPath };
   } finally { db.close(); }
 }
 

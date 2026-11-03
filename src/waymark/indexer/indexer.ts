@@ -23,8 +23,13 @@ export const INDEX_SCHEMA_VERSION = 7;
 export async function indexRepository(
   db: Database.Database, repoId: string, repoRoot: string, options: { force?: boolean } = {},
 ): Promise<IndexSummary> {
+  return withIndexLock(db, repoId, () => indexRepositoryLocked(db, repoId, repoRoot, options));
+}
+
+/** Serialize all writes to a repository's active index across processes. */
+export async function withIndexLock<T>(db: Database.Database, repoId: string, action: () => Promise<T> | T): Promise<T> {
   // An in-memory database cannot be shared with another process, so it needs no cross-process lock.
-  if (db.name === ':memory:') return indexRepositoryLocked(db, repoId, repoRoot, options);
+  if (db.name === ':memory:') return action();
   const lockPath = `${db.name}.${createHash('sha1').update(repoId).digest('hex')}.index.lock`;
   const started = Date.now();
   const token = randomUUID();
@@ -53,12 +58,12 @@ export async function indexRepository(
       await new Promise(resolve => setTimeout(resolve, 50));
     }
   }
-  try { return await indexRepositoryLocked(db, repoId, repoRoot, options); }
+  try { return await action(); }
   catch (error) { if (isStorageError(error)) throw storageFailure(dirname(db.name), error, 64 * 1024 * 1024); throw error; }
   finally { await removeIf(token); }
 }
 
-async function indexRepositoryLocked(
+export async function indexRepositoryLocked(
   db: Database.Database, repoId: string, repoRoot: string, options: { force?: boolean },
 ): Promise<IndexSummary> {
   const now = new Date().toISOString();

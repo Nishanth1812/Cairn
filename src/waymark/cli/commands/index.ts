@@ -221,13 +221,16 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       try {
         const target = positional(rest)[0] ?? process.cwd(); const gitRoot = await getGitRoot(target); if (!gitRoot) fail(`Not a Git repository: ${target}`, 3);
         const rootPath = await normalizeCanonicalPath(gitRoot); const name = option(rest, '--name', basename(rootPath))!;
-        const existing = db.prepare('SELECT id, root_path, display_name FROM repositories WHERE root_path = ?').get(rootPath) as { id: string; root_path: string; display_name: string } | undefined;
-        if (existing) return { code: 0, data: existing };
-        const conflict = db.prepare('SELECT 1 FROM repositories WHERE display_name = ?').get(name);
-        if (conflict) fail(`Repository name already registered: ${name}`, 2);
-        const id = randomUUID(); const now = new Date().toISOString();
-        db.prepare('INSERT INTO repositories (id, root_path, display_name, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)').run(id, rootPath, name, now, now);
-        return { code: 0, data: { id, rootPath, name } };
+        const registered = db.transaction(() => {
+          const existing = db.prepare('SELECT id, root_path, display_name FROM repositories WHERE lower(root_path) = lower(?)').get(rootPath) as { id: string; root_path: string; display_name: string } | undefined;
+          if (existing) return { code: 0, data: existing };
+          const conflict = db.prepare('SELECT 1 FROM repositories WHERE display_name = ?').get(name);
+          if (conflict) fail(`Repository name already registered: ${name}`, 2);
+          const id = randomUUID(); const now = new Date().toISOString();
+          db.prepare('INSERT INTO repositories (id, root_path, display_name, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)').run(id, rootPath, name, now, now);
+          return { code: 0, data: { id, rootPath, name } };
+        }).immediate();
+        return registered;
       } finally { db.close(); }
     }
     if (sub === 'unregister') {
@@ -269,6 +272,9 @@ export async function runCommand(args: string[], compactOutput = false): Promise
           // A plain folder that holds repos (a workspace) is searched across all of them.
           repos = (await onboardWorkspace(db, process.cwd(), { spawnIndex: false })).map((child) => repoRow(db, child.id));
           if (!repos.length) throw error;
+        } else if ('reason' in onboarding && onboarding.reason === 'registered') {
+          // Another process completed first-use registration after this lookup's initial repoRow read.
+          repos = [repoRow(db, undefined)];
         } else {
           if (!onboarding.onboarded) throw error;
           repos = [repoRow(db, undefined)];
