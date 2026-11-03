@@ -1,8 +1,8 @@
 // Black-box test of `search`: runs the built CLI against a throwaway git repo and an isolated state directory.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
-import { mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { stateDbPath } from './stateDb.mjs';
 import { after, before, test } from 'node:test';
@@ -26,7 +26,7 @@ before(() => {
   mkdirSync(join(repo, 'src'));
   writeFileSync(join(repo, 'src', 'billing.js'), 'export function computeInvoiceTotal(items) {\n  return items.reduce((sum, item) => sum + item.price, 0);\n}\n');
   writeFileSync(join(repo, 'src', 'report.js'), 'import { computeInvoiceTotal } from "./billing.js";\nexport const monthly = (items) => computeInvoiceTotal(items) * 12; // computeInvoiceTotal computeInvoiceTotal\n');
-  writeFileSync(join(repo, 'src', 'private.js'), 'const key = `-----BEGIN PRIVATE KEY-----\nMIIE-secret-fixture-should-never-escape\n-----END PRIVATE KEY-----`;\nexport const genericPemProbe = key.length;\n');
+  writeFileSync(join(repo, 'src', 'private.js'), 'const key = "-----BEGIN PRIVATE KEY-----MIIE-secret-fixture-should-never-escape-----END PRIVATE KEY-----"; export const genericPemProbe = key.length;\n');
 });
 after(() => { rmSync(repo, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
 
@@ -180,4 +180,17 @@ test('ranked search and --kind report items omitted by --limit', () => {
 test('--version reports the version in package.json', () => {
   const expected = JSON.parse(readFileSync('package.json', 'utf8')).version;
   assert.ok(execFileSync('node', ['--no-warnings', BIN, '--version'], { env, encoding: 'utf8' }).includes(expected));
+});
+
+test('a read-only database reports a permissions fix instead of disk cleanup advice', () => {
+  const dbPath = stateDbPath(home), mode = statSync(dbPath).mode & 0o777;
+  try {
+    chmodSync(dbPath, 0o444);
+    const result = spawnSync('node', ['--no-warnings', BIN, 'search', 'computeInvoiceTotal', '--json'], { cwd: repo, env, encoding: 'utf8' });
+    assert.equal(result.status, 1);
+    const response = JSON.parse(result.stdout);
+    assert.equal(response.ok, false);
+    assert.match(response.errors[0], /not writable.*permissions/i);
+    assert.doesNotMatch(response.errors[0], /free disk space|clean --scope indexes/i);
+  } finally { chmodSync(dbPath, mode); }
 });
