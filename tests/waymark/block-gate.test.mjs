@@ -25,6 +25,17 @@ const edit = (sessionId) => hook({ session_id: sessionId, cwd: repo, tool_name: 
 const read = (sessionId, filePath) => hook({ session_id: sessionId, cwd: repo, tool_name: 'Read', tool_input: { file_path: filePath } });
 const denied = (output) => output?.permissionDecision === 'deny';
 
+test('uninstall preserves user instruction text surrounding its managed block', () => {
+  const dir = join(home, '.codex');
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, 'AGENTS.md');
+  const prefix = 'User instructions\n';
+  const suffix = '\nUser notes  \n\n';
+  writeFileSync(path, `${prefix}<!-- BEGIN WEFT MANAGED BLOCK -->\nmanaged\n<!-- END WEFT MANAGED BLOCK -->${suffix}`);
+  cli('setup', '--harness', 'codex', '--uninstall');
+  assert.equal(readFileSync(path, 'utf8'), prefix + suffix);
+});
+
 before(() => {
   mkdirSync(join(repo, '.git'));
   mkdirSync(join(repo, 'src'));

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,11 +42,21 @@ try {
   invoke(['doctor']);
 
   for (const path of ['.claude', '.codex', join('.config', 'opencode')]) await mkdir(join(home, path), { recursive: true });
+  const instructions = [join(home, '.claude', 'CLAUDE.md'), join(home, '.codex', 'AGENTS.md'), join(home, '.config', 'opencode', 'AGENTS.md')];
+  await Promise.all(instructions.map((path) => writeFile(path, 'Existing instructions\n')));
   invoke(['setup']);
+  for (const path of instructions) {
+    const text = await readFile(path, 'utf8');
+    if (!text.includes('Existing instructions') || !text.includes('<!-- BEGIN WEFT MANAGED BLOCK -->')) throw new Error(`Setup did not preserve and add instructions in ${path}`);
+  }
   const created = [join(home, '.claude', 'settings.json'), join(home, '.claude.json'), join(home, '.codex', 'config.toml'), join(home, '.config', 'opencode', 'opencode.json')];
   const before = await Promise.all(created.map(async (path) => `${path}: ${await readFile(path, 'utf8').then(() => 'created').catch(() => 'not created')}`));
   process.stdout.write(`${before.join('\n')}\n`);
   invoke(['setup', '--uninstall']);
+  for (const path of instructions) {
+    const text = await readFile(path, 'utf8');
+    if (!text.includes('Existing instructions') || text.includes('<!-- BEGIN WEFT MANAGED BLOCK -->') || text.includes('<!-- END WEFT MANAGED BLOCK -->')) throw new Error(`Uninstall did not preserve and remove instructions in ${path}`);
+  }
   const after = await Promise.all(created.map(async (path) => {
     const text = await readFile(path, 'utf8').catch(() => '');
     return `${path}: ${text.includes('weft') || text.includes('Weft Core Guidelines') ? 'still contains Weft entries' : 'Weft entries removed'}`;

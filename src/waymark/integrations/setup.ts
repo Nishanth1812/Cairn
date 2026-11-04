@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { installClaudeHooks, uninstallClaudeHooks } from '../hooks/claude.js';
 import { CLAUDE_CODE_GUIDELINES } from './claude-code/index.js';
 import { CODEX_GUIDELINES } from './codex/index.js';
-import { syncInstructions } from './instructions.js';
+import { BEGIN_MANAGED_BLOCK, END_MANAGED_BLOCK, syncInstructions } from './instructions.js';
 
 export type Harness = 'claude-code' | 'codex' | 'opencode' | 't3';
 export type SetupOptions = { home: string; harnesses?: Harness[]; dryRun?: boolean; uninstall?: boolean; bin?: string; hooks?: boolean; toolHints?: boolean };
@@ -33,10 +33,9 @@ export async function setupWeft(options: SetupOptions) {
 
 async function removeManagedInstructions(path: string, dryRun?: boolean) {
   const { readFile, writeFile, rename, rm, mkdir } = await import('node:fs/promises');
-  const { BEGIN_MANAGED_BLOCK, END_MANAGED_BLOCK } = await import('./instructions.js');
-  const original = await readFile(path, 'utf8').catch(() => '');
+  const original = await readFile(path, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return ''; throw error; });
   const start = original.indexOf(BEGIN_MANAGED_BLOCK), end = original.indexOf(END_MANAGED_BLOCK);
-  const content = start >= 0 && end >= start ? `${original.slice(0, start)}${original.slice(end + END_MANAGED_BLOCK.length)}`.trimEnd() + (original.slice(end + END_MANAGED_BLOCK.length).endsWith('\n') ? '\n' : '') : original;
+  const content = start >= 0 && end >= start ? original.slice(0, start) + original.slice(end + END_MANAGED_BLOCK.length) : original;
   const modified = content !== original;
   if (modified && !dryRun) { await mkdir(join(path, '..'), { recursive: true }); const temp = `${path}.${process.pid}.tmp`; try { await writeFile(temp, content); await rename(temp, path); } finally { await rm(temp, { force: true }); } }
   return { path, modified };

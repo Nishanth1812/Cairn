@@ -5,7 +5,7 @@ that answers "where is X handled?" in a few hundred tokens, so the agent stops g
 
 - **Ranked lookups.** `cairn waymark context "where is auth handled"` returns ranked, line-ranged snippets and definitions, not a pile of files, packed to a token budget (typically a few hundred to ~1k tokens).
 - **Measured, not promised.** In controlled A/Bs with a small model on Playwright and Django, agents using Cairn were not faster (about +2 to +7 s per task) and not clearly cheaper. See [docs/waymark/ab-results.md](docs/waymark/ab-results.md). Try it on your own repo and check `cairn waymark stats`.
-- **Local only.** Everything runs on your machine in a SQLite database. Nothing is uploaded, and the code makes no network calls. Secrets found in code are redacted before they are stored or shown.
+- **Local only.** Everything runs on your machine in a SQLite database. Nothing is uploaded, and the code makes no network calls. Cairn excludes common sensitive paths and redacts recognised secrets, but detection is not exhaustive; avoid indexing repositories containing secrets you cannot safely store locally.
 - **Honest numbers.** `cairn waymark stats` reports only what it observed (adoption, follow-through, fallbacks), not estimated savings. See [docs/waymark/evaluating.md](docs/waymark/evaluating.md).
 
 ## Install
@@ -16,8 +16,9 @@ Needs Node 24 or newer.
 git clone https://github.com/Nishanth1812/Cairn.git
 cd Cairn && npm ci && npm run build && npm link   # puts `cairn` on your PATH
 cairn waymark init                                # create config and state directories
-cairn waymark setup                               # hooks + instructions for Claude Code, Codex, OpenCode
+cairn waymark setup                               # managed instructions for Claude Code, Codex, OpenCode
                                                   #   (--dry-run to preview, --harness claude-code,codex to pick)
+                                                  #   pass --hooks to opt into Claude Code lifecycle hooks
 cairn doctor                                      # verify the setup
 ```
 

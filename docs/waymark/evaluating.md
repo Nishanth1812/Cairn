@@ -20,6 +20,6 @@ Judge it on those task comparisons plus the fallback rate, not on adoption alone
 
 ## Retrieval regression check
 
-`cairn waymark bench retrieval` (run from this repo) replays `tests/waymark/golden/queries.json` and reports how many queries return an expected file. Run it before and after any ranking or indexing change. Baseline on 2026-11-01: 18 of 25 queries hit before the lookup module was added. A change that lowers that number needs a reason.
+`cairn waymark bench retrieval` (run from this repo) replays `tests/waymark/golden/queries.json` and reports whether an expected file appears in the top 1, 3 or 5 results. Run it before and after any ranking or indexing change. On 2026-11-04, the local tuning set had 47/67 hits at 1, 57/67 at 3 and 62/67 at 5. The benchmark runs against this repo's own code, so changes to the corpus or queries can shift the results.
 
-The benchmark runs against this repo's own code, so adding files shifts its numbers. Re-record the baseline when the code changes materially; the current one is 19 of 25 (2026-11-01, after camelCase word splitting and stemming were added to the index). The six misses are queries whose words are not in the expected files or whose expected files are doubtful; do not tune ranking to them.
+These are tuning queries, not independent evidence of performance on other repositories. The fixture also has held-out queries for `p-limit`; register a checkout named `p-limit`, then run `cairn waymark bench retrieval --repo p-limit` from this repo to evaluate them. Inspect misses before changing ranking, and compare held-out results rather than tuning only to this fixture.
