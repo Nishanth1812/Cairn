@@ -237,6 +237,8 @@ test('warm refreshes detect modified, untracked, deleted, and branch-switched fi
     execFileSync('git', ['add', 'src'], { cwd: repo });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'main'], { cwd: repo });
     assert.match(JSON.stringify(search('initialRefreshNeedle').data), /entry\.js/);
+    const backgroundLocks = () => readdirSync(home, { recursive: true }).filter(name => String(name).endsWith('.background.lock')).map(name => readFileSync(join(home, String(name)), 'utf8'));
+    const locksAfterFirstIndex = backgroundLocks();
 
     writeFileSync(join(repo, 'src', 'entry.js'), 'export function modifiedRefreshNeedle() { return 2; }\n');
     assert.match(JSON.stringify(search('modifiedRefreshNeedle').data), /entry\.js/);
@@ -255,8 +257,8 @@ test('warm refreshes detect modified, untracked, deleted, and branch-switched fi
     execFileSync('git', ['checkout', '--quiet', 'main'], { cwd: repo });
     assert.doesNotMatch(JSON.stringify(search('branchRefreshNeedle').data), /branch\.js/);
     assert.match(JSON.stringify(search('initialRefreshNeedle').data), /entry\.js/);
-    // A refresh that swaps the active generation must not spawn a pointless background re-index.
-    assert.deepEqual(readdirSync(home, { recursive: true }).filter(name => String(name).endsWith('.background.lock')), []);
+    // A refresh that swaps the active generation must not spawn another background index (a spawn rewrites the lock).
+    assert.deepEqual(backgroundLocks(), locksAfterFirstIndex);
   } finally {
     rmSync(repo, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
     rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
