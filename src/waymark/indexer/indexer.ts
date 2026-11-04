@@ -9,6 +9,7 @@ import { freeSpaceBytes, isStorageError, storageFailure } from '../storage/stora
 import { detectLanguage, extractSymbols } from './symbols.js';
 import { chunkText } from './chunker.js';
 import { buildSearchExtra, buildSearchText } from './searchText.js';
+import { referenceSites } from '../core/referenceSites.js';
 import { walkRepository, type CandidateFile, type PreviousFile } from './walker.js';
 
 export interface IndexSummary {
@@ -147,6 +148,7 @@ export async function indexRepositoryLocked(
       db.prepare("INSERT INTO chunk_fts(chunk_fts) VALUES('rebuild')").run();
       if (chunkInsertTrigger) db.exec(chunkInsertTrigger.sql);
       populateReferenceEdges(db, buildingId);
+      populateReferenceSites(db, buildingId);
       db.prepare('UPDATE index_generations SET status = \'ready\', completed_at = ? WHERE id = ?').run(new Date().toISOString(), buildingId);
       db.prepare('INSERT INTO repo_index_state (repo_id, active_generation, schema_version, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(repo_id) DO UPDATE SET active_generation = excluded.active_generation, schema_version = excluded.schema_version, updated_at = excluded.updated_at').run(repoId, buildingId, INDEX_SCHEMA_VERSION, new Date().toISOString());
       db.prepare('DELETE FROM index_generations WHERE repo_id = ? AND id != ?').run(repoId, buildingId);
@@ -185,6 +187,22 @@ export function storeFile(db: Database.Database, repoId: string, generationId: n
 }
 
 
+export function populateReferenceSites(db: Database.Database, generationId: number, paths?: string[]): void {
+  const files = db.prepare(`SELECT id, path FROM files WHERE generation_id = ?${paths ? ` AND path IN (${paths.map(() => '?').join(',')})` : ''}`).all(generationId, ...(paths ?? [])) as Array<{ id: number; path: string }>;
+  const getSymbols = db.prepare('SELECT name, kind, start_line AS startLine, end_line AS endLine FROM symbols WHERE file_id = ? ORDER BY start_line');
+  const targetNames = new Set((db.prepare('SELECT DISTINCT s.name FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.generation_id = ?').all(generationId) as Array<{ name: string }>).map(({ name }) => name));
+  const getChunks = db.prepare('SELECT start_line AS startLine, safe_text AS safeText FROM chunks WHERE file_id = ? ORDER BY start_line');
+  const insert = db.prepare('INSERT OR IGNORE INTO reference_sites (file_id, identifier, line, group_name, symbol_kind, reference_kind, specifier) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  for (const file of files) {
+    db.prepare('DELETE FROM reference_sites WHERE file_id = ?').run(file.id);
+    const symbols = getSymbols.all(file.id) as Array<{ name: string; kind: string; startLine: number; endLine: number }>;
+    const chunks = getChunks.all(file.id) as Array<{ startLine: number; safeText: string }>;
+    for (const site of referenceSites(chunks, symbols, file.path, targetNames)) {
+      insert.run(file.id, site.identifier, site.line, site.groupName, site.symbolKind, site.referenceKind, site.specifier ?? null);
+    }
+  }
+  if (!paths) db.prepare('INSERT OR IGNORE INTO reference_index_generations(generation_id) VALUES (?)').run(generationId);
+}
 function populateReferenceEdges(db: Database.Database, generationId: number): void {
   const symbols = db.prepare('SELECT s.id, s.file_id AS fileId, s.name, s.start_line AS startLine, s.end_line AS endLine FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.generation_id = ? ORDER BY f.path, s.start_line').all(generationId) as Array<{ id: number; fileId: number; name: string; startLine: number; endLine: number }>;
   const targets = new Map<string, number[]>();

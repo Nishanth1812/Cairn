@@ -261,6 +261,82 @@ test('warm refreshes detect modified, untracked, deleted, and branch-switched fi
   }
 });
 
+test('v12 indexes keep reference results while the automatic site-index rebuild runs', async () => {
+  const repo = mkdtempSync(join(base, 'reference-upgrade-repo-'));
+  const home = mkdtempSync(join(base, 'reference-upgrade-home-'));
+  const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'r'), LOCALAPPDATA: join(home, 'l'), XDG_CONFIG_HOME: join(home, 'c'), XDG_STATE_HOME: join(home, 's'), XDG_CACHE_HOME: join(home, 'k') };
+  const refs = () => JSON.parse(execFileSync('node', ['--no-warnings', cli, 'search', '--refs', 'upgradeReferenceProbe', '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
+  try {
+    execFileSync('git', ['init', '--quiet', '-b', 'main'], { cwd: repo });
+    mkdirSync(join(repo, 'src'));
+    writeFileSync(join(repo, 'src', 'target.js'), 'export function upgradeReferenceProbe() {}\n');
+    writeFileSync(join(repo, 'src', 'caller.js'), 'import { upgradeReferenceProbe } from "./target.js";\nexport function caller() { return upgradeReferenceProbe(); }\n');
+    execFileSync('git', ['add', 'src'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'fixture'], { cwd: repo });
+    assert.equal(refs().length, 2);
+
+    const dbPath = stateDbPath(home), db = new Database(dbPath);
+    try { db.exec('DROP TABLE reference_index_generations; DROP TABLE reference_sites; DELETE FROM schema_migrations WHERE version = 13;'); }
+    finally { db.close(); }
+
+    const fallback = refs();
+    assert.deepEqual(fallback.map(({ path, referenceKind }) => [path, referenceKind]), [['src/caller.js', 'import'], ['src/caller.js', 'call']]);
+    const deadline = Date.now() + 15_000;
+    let complete = false;
+    while (Date.now() < deadline) {
+      const check = new Database(dbPath, { readonly: true });
+      try { const active = check.prepare('SELECT active_generation FROM repo_index_state').get()?.active_generation; complete = active != null && !!check.prepare('SELECT 1 FROM reference_index_generations WHERE generation_id = ?').get(active); }
+      finally { check.close(); }
+      if (complete) break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.ok(complete, 'the legacy generation must be rebuilt in the background');
+    assert.deepEqual(refs(), fallback);
+  } finally {
+    rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+test('reference sites stay current after edits, file changes, and branch switches', () => {
+  const repo = mkdtempSync(join(base, 'reference-refresh-repo-'));
+  const home = mkdtempSync(join(base, 'reference-refresh-home-'));
+  const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'r'), LOCALAPPDATA: join(home, 'l'), XDG_CONFIG_HOME: join(home, 'c'), XDG_STATE_HOME: join(home, 's'), XDG_CACHE_HOME: join(home, 'k') };
+  const refs = (symbol) => JSON.parse(execFileSync('node', ['--no-warnings', cli, 'search', '--refs', symbol, '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
+  const commit = (message) => {
+    execFileSync('git', ['add', 'src'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', message], { cwd: repo });
+  };
+  try {
+    execFileSync('git', ['init', '--quiet', '-b', 'main'], { cwd: repo });
+    mkdirSync(join(repo, 'src'));
+    writeFileSync(join(repo, 'src', 'target.js'), 'export function referenceLifecycleNeedle() {}\n');
+    writeFileSync(join(repo, 'src', 'caller.js'), 'import { referenceLifecycleNeedle } from "./target.js";\nexport function caller() { return referenceLifecycleNeedle(); }\n');
+    commit('main');
+    assert.deepEqual(refs('referenceLifecycleNeedle').map(({ path, referenceKind }) => [path, referenceKind]), [['src/caller.js', 'import'], ['src/caller.js', 'call']]);
+
+    writeFileSync(join(repo, 'src', 'target.js'), 'export function referenceEditedNeedle() {}\n');
+    writeFileSync(join(repo, 'src', 'caller.js'), 'import { referenceEditedNeedle } from "./target.js";\nexport function caller() { return referenceEditedNeedle(); }\n');
+    commit('edit references');
+    assert.deepEqual(refs('referenceLifecycleNeedle'), []);
+    assert.deepEqual(refs('referenceEditedNeedle').map(({ path }) => path), ['src/caller.js', 'src/caller.js']);
+
+    writeFileSync(join(repo, 'src', 'extra.js'), 'import { referenceEditedNeedle } from "./target.js";\nexport const added = referenceEditedNeedle();\n');
+    assert.ok(refs('referenceEditedNeedle').some(({ path }) => path === 'src/extra.js'));
+    rmSync(join(repo, 'src', 'extra.js'));
+    assert.ok(refs('referenceEditedNeedle').every(({ path }) => path !== 'src/extra.js'));
+
+    execFileSync('git', ['checkout', '-b', 'other'], { cwd: repo });
+    writeFileSync(join(repo, 'src', 'branch-target.js'), 'export function branchReferenceNeedle() {}\n');
+    writeFileSync(join(repo, 'src', 'branch-caller.js'), 'export function branchCaller() { return branchReferenceNeedle(); }\n');
+    commit('branch');
+    assert.ok(refs('branchReferenceNeedle').some(({ path }) => path === 'src/branch-caller.js'));
+    execFileSync('git', ['checkout', '--quiet', 'main'], { cwd: repo });
+    assert.deepEqual(refs('branchReferenceNeedle'), []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
 test('constraint errors mentioning disk space stay distinct and failed index writes preserve the active generation', () => {
   const repo = mkdtempSync(join(base, 'index-full-repo-'));
   const home = mkdtempSync(join(base, 'index-full-home-'));
