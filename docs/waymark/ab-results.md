@@ -1,5 +1,7 @@
 # Cairn default-hook controlled A/B
 
+This records the earlier default-hook experiment. Claude Code lifecycle hooks are now opt-in with `setup --harness claude-code --hooks`; setup installs instructions only by default.
+
 **Decision:** Cairn-on did not show an overall wall-time saving. Mean B−A was **+2.17 s** (95% CI −5.88 to +7.89 s). B used **31,694 more input tokens** (CI +9,852 to +55,561); its **$0.000456 lower mean cost** and **0.88 more turns** both have intervals crossing zero. The effect differs by repository: Playwright was slower under B; Django’s estimate was faster but noisy.
 
 ## Protocol and pilot

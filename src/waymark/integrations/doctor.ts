@@ -20,7 +20,7 @@ async function jsonFile(path: string): Promise<Record<string, unknown> | undefin
 function hookCommand(settings: Record<string, unknown> | undefined): string | undefined {
   const hooks = settings?.hooks;
   if (!hooks || typeof hooks !== 'object') return undefined;
-  for (const event of ['SessionStart', 'UserPromptSubmit', 'Stop', 'PreCompact']) {
+  for (const event of ['SessionStart', 'UserPromptSubmit', 'Stop', 'PreCompact', 'PreToolUse']) {
     const entries = (hooks as Record<string, unknown>)[event];
     if (!Array.isArray(entries)) continue;
     for (const entry of entries) {
@@ -49,7 +49,8 @@ export async function checkIntegrations(home: string): Promise<IntegrationCheck[
   const requiredHooks = ['SessionStart', 'UserPromptSubmit', 'Stop', 'PreCompact'];
   const hookSettings = claude?.hooks && typeof claude.hooks === 'object' ? claude.hooks as Record<string, unknown> : {};
   const hasRequiredHooks = requiredHooks.every((event) => Array.isArray(hookSettings[event]) && (hookSettings[event] as Array<{ hooks?: unknown }>).some((entry) => Array.isArray(entry.hooks) && (entry.hooks as Array<{ command?: unknown }>).some((hook) => typeof hook.command === 'string' && hook.command.includes('# weft-hook'))));
-  const claudeHookStatus = hasRequiredHooks ? hookStatus(hookCommand(claude)) : 'missing';
+  const configuredHook = hookCommand(claude);
+  const claudeHookStatus = !configuredHook ? 'installed' : hasRequiredHooks ? hookStatus(configuredHook) : 'missing';
   const instructionChecks = await Promise.all([
     checkInstructions(join(home, '.claude', 'CLAUDE.md'), CLAUDE_CODE_GUIDELINES),
     checkInstructions(join(home, '.codex', 'AGENTS.md'), CODEX_GUIDELINES),

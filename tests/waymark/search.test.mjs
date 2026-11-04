@@ -99,9 +99,18 @@ test('context shows a window around the match when the only hit is bigger than t
 test('context merges adjacent excerpts from the same file into one range', () => {
   writeFileSync(join(repo, 'src', 'adjacent.js'), 'export function alphaNeedle() { return sharedSignal; }\nexport function betaNeedle() { return sharedSignal; }\n');
   const text = execFileSync('node', ['--no-warnings', BIN, 'context', 'sharedSignal', '--limit', '10'], { cwd: repo, env, encoding: 'utf8' });
-  assert.match(text, /alphaNeedle/);
-  assert.match(text, /betaNeedle/);
-  assert.equal((text.match(/src\/adjacent\.js:/g) ?? []).length, 1);
+  assert.match(text, /src\/adjacent\.js:1/);
+  assert.match(text, /src\/adjacent\.js:2/);
+  assert.equal(text.split('\n\n').filter(section => section.startsWith('src/adjacent.js:')).length, 1);
+});
+
+test('context leads with the definition and exposes caller lines in text and JSON', () => {
+  const text = execFileSync('node', ['--no-warnings', BIN, 'context', 'computeInvoiceTotal'], { cwd: repo, env, encoding: 'utf8' });
+  assert.match(text, /^src\/billing\.js:\d+-\d+\s+computeInvoiceTotal/);
+  assert.match(text, /\nsrc\/report\.js:2\n/);
+  const data = JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'context', 'computeInvoiceTotal', '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
+  assert.deepEqual(data.answer.definition, { symbol: 'computeInvoiceTotal', path: 'src/billing.js', startLine: 1, endLine: 3 });
+  assert.ok(data.answer.usages.some((use) => use.path === 'src/report.js' && use.line === 2));
 });
 
 test('large symbol chunks stay within 60 lines and retain their symbol name', () => {

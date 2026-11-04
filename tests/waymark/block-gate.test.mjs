@@ -1,7 +1,7 @@
 // Black-box test that no accumulated lookup state can block a tool.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -72,22 +72,32 @@ test('a Waymark search from a subfolder of the repo works', () => {
   assert.equal(out.ok, true);
 });
 
-test('default setup installs lifecycle hooks without per-tool hints', () => {
-  mkdirSync(join(home, '.claude'), { recursive: true });
+test('default setup installs instructions only and doctor accepts the no-hook install', () => {
+  execFileSync('node', ['--no-warnings', BIN, 'setup', '--harness', 'claude-code', '--dry-run'], { cwd: repo, env, encoding: 'utf8' });
+  assert.equal(existsSync(join(home, '.claude')), false);
   execFileSync('node', ['--no-warnings', BIN, 'setup', '--harness', 'claude-code'], { cwd: repo, env, encoding: 'utf8' });
-  const settings = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8'));
-  assert.deepEqual(Object.keys(settings.hooks).sort(), ['PreCompact', 'SessionStart', 'Stop', 'UserPromptSubmit'].sort());
+  assert.equal(existsSync(join(home, '.claude', 'settings.json')), false);
   const instructions = readFileSync(join(home, '.claude', 'CLAUDE.md'), 'utf8');
   assert.match(instructions, /Grep\/Read remain fine/);
+  assert.match(instructions, /Answer from the Cairn result/);
   assert.doesNotMatch(instructions, /denied|blocked until feedback/i);
   const doctor = JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'doctor', '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
   assert.equal(doctor.integrations.find((item) => item.id === 'claude-code hooks').status, 'installed');
 });
 
-test('opt-in hints preserve foreign PreToolUse entries and dry-run writes nothing', () => {
+test('--hooks installs four lifecycle hooks and doctor accepts them', () => {
+  execFileSync('node', ['--no-warnings', BIN, 'setup', '--harness', 'claude-code', '--hooks'], { cwd: repo, env, encoding: 'utf8' });
+  const settings = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8'));
+  assert.deepEqual(Object.keys(settings.hooks).sort(), ['PreCompact', 'SessionStart', 'Stop', 'UserPromptSubmit'].sort());
+  const doctor = JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'doctor', '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
+  assert.equal(doctor.integrations.find((item) => item.id === 'claude-code hooks').status, 'installed');
+});
+
+test('default re-run removes old Cairn hooks, preserves foreign hooks, and dry-run writes nothing', () => {
   const settingsPath = join(home, '.claude', 'settings.json');
   const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
   settings.hooks.PreToolUse = [{ matcher: 'Bash|Grep|Glob|Read', hooks: [{ type: 'command', command: 'cairn waymark hook pre-tool-use # weft-hook' }, { type: 'command', command: 'other-tool # foreign' }] }];
+  settings.hooks.SessionStart.push({ hooks: [{ type: 'command', command: 'other-tool # foreign' }] });
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
   const before = readFileSync(settingsPath, 'utf8');
   execFileSync('node', ['--no-warnings', BIN, 'setup', '--harness', 'claude-code', '--dry-run'], { cwd: repo, env, encoding: 'utf8' });
@@ -95,8 +105,11 @@ test('opt-in hints preserve foreign PreToolUse entries and dry-run writes nothin
   execFileSync('node', ['--no-warnings', BIN, 'setup', '--harness', 'claude-code'], { cwd: repo, env, encoding: 'utf8' });
   let cleaned = JSON.parse(readFileSync(settingsPath, 'utf8'));
   assert.deepEqual(cleaned.hooks.PreToolUse[0].hooks.map((hook) => hook.command), ['other-tool # foreign']);
+  assert.deepEqual(cleaned.hooks.SessionStart[0].hooks.map((hook) => hook.command), ['other-tool # foreign']);
+  assert.deepEqual(Object.keys(cleaned.hooks).sort(), ['PreToolUse', 'SessionStart']);
   execFileSync('node', ['--no-warnings', BIN, 'setup', '--harness', 'claude-code', '--tool-hints'], { cwd: repo, env, encoding: 'utf8' });
   cleaned = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  assert.deepEqual(Object.keys(cleaned.hooks).sort(), ['PreCompact', 'PreToolUse', 'SessionStart', 'Stop', 'UserPromptSubmit'].sort());
   assert.equal(cleaned.hooks.PreToolUse.find((entry) => entry.hooks.some((hook) => hook.command.includes('# weft-hook'))).matcher, 'Bash|Grep|Glob|Read');
   assert.ok(cleaned.hooks.PreToolUse[0].hooks.some((hook) => hook.command === 'other-tool # foreign'));
 });

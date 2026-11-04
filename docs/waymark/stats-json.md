@@ -8,7 +8,7 @@ Top-level fields:
   - `percent` — share of observed code lookups that went through Waymark: `weftCalls / (weftCalls + nativeCalls)`, rounded; `null` when native sweep counts are unavailable or there were no lookups
   - `weftCalls` — `search` and `context` calls
   - `nativeCalls` — observed sweeps: `Grep`, `Glob`, grep/rg/find in Bash, and whole-file reads of large files. These counts require the opt-in `setup --tool-hints` PreToolUse hook; without it the value is `null` and `percent` is `null` when no native sweeps were observed. Ranged `Read`s are the intended follow-up to a search and are not counted.
-  - `nativeCallsObserved` — whether any native sweep events were recorded. With the default hook set, adoption can be incomplete because sweeps are not observed.
+  - `nativeCallsObserved` — whether any native sweep events were recorded. Native sweeps are observed only when the opt-in `--tool-hints` hook is installed, so adoption can be incomplete without it.
 - `toolTokens` — `{ calls, returned }` for `search` and `context`; `returned` is the estimated tokens of what the caller receives: the text the CLI prints (`formatSearch` / `formatContext`), or the JSON payload under `--json`
 - `promptHook` — `{ injections, returned }` for `hook_prompt`
 - `quality` — whether Waymark answered, from rows already written

@@ -84,7 +84,10 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = { stdout:
     for (const error of result.errors ?? []) io.stderr(`Error: ${redactSafe(error)}\n`);
   } else if (!parsed.quiet) {
     if (typeof result.data === 'string') io.stdout(`${redactSafe(result.data)}\n`);
-    else if (command === 'context' && result.data && typeof result.data === 'object' && 'items' in result.data) io.stdout(`${redactSafe(formatContext((result.data as { items: Parameters<typeof formatContext>[0] }).items))}\n`);
+    else if (command === 'context' && result.data && typeof result.data === 'object' && 'items' in result.data) {
+      const context = result.data as { items: Parameters<typeof formatContext>[0]; query?: string };
+      io.stdout(`${redactSafe(formatContext(context.items, context.query))}\n`);
+    }
     else if (result.data !== undefined) io.stdout(`${redactSafe(JSON.stringify(result.data, null, 2))}\n`);
     for (const warning of result.warnings ?? []) io.stderr(`Warning: ${redactSafe(warning)}\n`);
   }

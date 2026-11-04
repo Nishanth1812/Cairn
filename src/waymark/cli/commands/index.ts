@@ -35,7 +35,7 @@ import { checkIntegrations } from '../../integrations/doctor.js';
 import { runRetrievalBenchmark, type RetrievalQuery } from '../../bench/retrieval.js';
 import { ensureRepoOnboarded, indexWithinLimit } from '../../onboarding/auto.js';
 import { refreshIndex } from '../../indexer/refresh.js';
-import { formatContext, formatExact, formatReferences, formatSearch, formatSymbols, searchRecord } from '../format.js';
+import { contextAnswer, formatContext, formatExact, formatReferences, formatSearch, formatSymbols, searchRecord } from '../format.js';
 import { exactMatches, SYMBOL_KINDS, symbolsByKind } from '../../context/lookup.js';
 import { onboardWorkspace } from '../../onboarding/workspace.js';
 import { runVerification } from '../../verification/runner.js';
@@ -156,7 +156,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
     const selected = (option(args, '--harness', 'claude-code,codex,opencode') ?? '').split(',');
     if (selected.some((value) => !['claude-code', 'codex', 'opencode', 't3'].includes(value))) fail('--harness must be claude-code,codex,opencode,or t3', 2);
     const dryRun = args.includes('--dry-run'), uninstall = args.includes('--uninstall');
-    const data = await setupWeft({ home, harnesses: selected as Harness[], dryRun, uninstall, toolHints: args.includes('--tool-hints') });
+    const data = await setupWeft({ home, harnesses: selected as Harness[], dryRun, uninstall, hooks: args.includes('--hooks'), toolHints: args.includes('--tool-hints') });
     if (!dryRun) { const config = await loadConfig(); config.autoOnboard = !uninstall; await saveConfig(config); }
     return { code: 0, data };
   }
@@ -370,7 +370,8 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       const contextPaths = new Set(results.filter((hit, index) => results.findIndex(other => other.path === hit.path) === index).slice(0, 2).map(hit => hit.path));
       const contextHits = compactOutput ? results.filter(hit => contextPaths.has(hit.path)) : results;
       const packed = packContext(contextHits, budget, query);
-      return respond(packed, formatContext(packed.items), packed.items, packed.omittedCount);
+      const answer = contextAnswer(packed.items, query);
+      return respond({ ...packed, answer }, formatContext(packed.items, query), packed.items, packed.omittedCount);
     } finally { db.close(); }
   }
   if (group === 'task') {
@@ -490,7 +491,7 @@ Fell back to a sweep after a lookup: ${stats.quality.fallbackPercent == null ? '
 }
 
 const VALUE_FLAGS = new Set(['--name', '--limit', '--budget', '--scope', '--since', '--source', '--suite', '--harness', '--repo', '--tasks', '--repeat', '--task', '--kind', '--refs', '--query', '--session']);
-export const KNOWN_FLAGS = new Set([...VALUE_FLAGS, '--force', '--repair', '--dry-run', '--keep-data', '--interactive', '--yes', '--global', '--suggest', '--uninstall', '--portable', '--exact', '--tool-hints']);
+export const KNOWN_FLAGS = new Set([...VALUE_FLAGS, '--force', '--repair', '--dry-run', '--keep-data', '--interactive', '--yes', '--global', '--suggest', '--uninstall', '--portable', '--exact', '--tool-hints', '--hooks']);
 
 function validateFlags(args: string[]): void {
   const valueFlags = VALUE_FLAGS;

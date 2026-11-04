@@ -31,7 +31,7 @@ export async function runRetrievalBenchmark(db: Database.Database, repoId: strin
     const ranked = rankCandidates(searchChunks(db, repoId, entry.query, 100).filter((item) => item.path !== queryFixture), entry.query);
     const rankedPaths = [...new Set(ranked.map((item) => item.path))];
     const compact = packContext(ranked.filter((item, index) => ranked.findIndex(other => other.path === item.path) === index).slice(0, 2), 1000, entry.query);
-    const output = formatContext(compact.items);
+    const output = formatContext(compact.items, entry.query);
     const expected = new Set(entry.expectedTop3);
     const hit = (count: number) => rankedPaths.slice(0, count).some((path) => expected.has(path));
     rows.push({ query: entry.query, split: entry.split ?? 'tuning', expectedTop3: entry.expectedTop3, baselineTokens, weftTokens: estimateTokens(output), ratio: compact.items.length ? baselineTokens / estimateTokens(output) : null,

@@ -196,6 +196,7 @@ export async function uninstallClaudeHooks(options: { projectRoot?: string; home
       if (kept.length !== (entry.hooks ?? []).length) modified = true;
       return { ...entry, hooks: kept };
     }).filter((entry) => (entry.hooks ?? []).length);
+    if (!hooks[event]?.length) delete hooks[event];
   }
   if (modified && !options.dryRun) { const temp = `${path}.${process.pid}.tmp`; await writeFile(temp, `${JSON.stringify({ ...settings, hooks }, null, 2)}\n`, 'utf8'); await rename(temp, path); }
   return { path, modified };

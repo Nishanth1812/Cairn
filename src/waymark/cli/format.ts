@@ -1,15 +1,16 @@
 import type { ExactMatch, SymbolHit } from '../context/lookup.js';
 
-type Location = { path: string; startLine: number; endLine: number; safeText: string; symbols?: string[] };
+type Location = { path: string; startLine: number; endLine: number; safeText: string; symbols?: string[]; defines?: string[] };
 
 const queryTerms = (query: string): string[] => query.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** Names the symbol the query is about when the chunk has one, else the first symbol it mentions. */
-function header(item: Location, query = ''): string {
+function header(item: Location, query = '', includeSymbol = true): string {
   const inChunk = item.symbols?.filter(name => item.safeText.includes(name)) ?? [];
   const terms = queryTerms(query);
   const symbol = inChunk.find(name => terms.includes(name.toLowerCase())) ?? inChunk.find(name => terms.some(term => name.toLowerCase().includes(term))) ?? inChunk[0] ?? item.symbols?.[0];
-  return `${item.path}:${item.startLine}-${item.endLine}  ${symbol ?? item.safeText.split(/\r?\n/, 1)[0]?.trim() ?? ''}`;
+  return `${item.path}:${item.startLine}-${item.endLine}${includeSymbol ? `  ${symbol ?? item.safeText.split(/\r?\n/, 1)[0]?.trim() ?? ''}` : ''}`;
 }
 
 /** The first line that holds a query term, so a hit shows why it matched; the chunk's first line when none does. */
@@ -38,10 +39,28 @@ export function searchRecord(item: Location & { score: number; selectionReason: 
   return { path: item.path, startLine: item.startLine, endLine: item.endLine, score: item.score, selectionReason: item.selectionReason, symbols: item.symbols ?? [], line: matchingLine(item, query) };
 }
 
-export function formatContext(items: Location[]): string {
+export function contextAnswer(items: Location[], query = '') {
+  const terms = queryTerms(query);
+  const symbol = [...new Set(items.flatMap(item => item.defines ?? []))].find(name => terms.includes(name.toLowerCase()));
+  const definition = symbol && items.find(item => item.defines?.includes(symbol));
+  const usages: Array<{ path: string; line: number }> = [];
+  if (symbol) for (const item of items) {
+    const lines = item.safeText.split(/\r?\n/);
+    for (const [offset, line] of lines.entries()) {
+      if (item === definition || !new RegExp(`(?<![\\p{L}\\p{N}_$])${escapeRegExp(symbol)}(?![\\p{L}\\p{N}_$])`, 'u').test(line) || /^\s*(?:\/\/|\/\*|\*|#|<!--)/.test(line)) continue;
+      usages.push({ path: item.path, line: item.startLine + offset });
+      if (usages.length === 3) break;
+    }
+    if (usages.length === 3) break;
+  }
+  return { ...(definition && symbol ? { definition: { symbol, path: definition.path, startLine: definition.startLine, endLine: definition.endLine } } : {}), usages };
+}
+
+export function formatContext(items: Location[], query = ''): string {
+  const { definition, usages } = contextAnswer(items, query);
   const byFile = new Map<string, Location[]>();
   for (const item of items) { const rows = byFile.get(item.path) ?? []; rows.push(item); byFile.set(item.path, rows); }
-  return [...byFile.values()].flatMap(rows => {
+  const mergedItems = [...byFile.values()].flatMap(rows => {
     const merged: Location[] = [];
     for (const row of rows.sort((a, b) => a.startLine - b.startLine)) {
       const previous = merged.at(-1);
@@ -50,8 +69,17 @@ export function formatContext(items: Location[]): string {
         previous.endLine = Math.max(previous.endLine, row.endLine);
       } else merged.push({ ...row });
     }
-    return merged.map(item => `${header(item)}\n${item.safeText.trim().replace(/\n{3,}/g, '\n\n')}`);
-  }).join('\n\n');
+    return merged;
+  });
+  const definitionItem = definition && mergedItems.find(item => item.path === definition.path && item.startLine <= definition.startLine && item.endLine >= definition.startLine);
+  const ordered = definitionItem ? [definitionItem, ...mergedItems.filter(item => item !== definitionItem)] : mergedItems;
+  const usageLines = new Set(usages.map(use => `${use.path}:${use.line}`));
+  const snippets = ordered.map(item => {
+    const text = item.safeText.split(/\r?\n/).filter((_, offset) => !usageLines.has(`${item.path}:${item.startLine + offset}`)).join('\n').trim().replace(/\n{3,}/g, '\n\n');
+    return item === definitionItem ? text : `${item.path}:${item.startLine}\n${text}`;
+  }).filter(Boolean);
+  const answer = definitionItem ? [header(definitionItem, query), ...usages.map(use => `${use.path}:${use.line}`)] : [];
+  return [answer.join('\n'), ...snippets].filter(Boolean).join('\n\n');
 }
 
 /** `total` can exceed matches.length when --limit cut the list; say so, so an audit is never silently partial. */
