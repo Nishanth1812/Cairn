@@ -1,6 +1,6 @@
 {
   "name": "@nishanth1812/cairn",
-  "version": "0.1.1",
+  "version": "0.1.0",
   "description": "Cairn: Waymark, a code index for AI coding agents, as one command.",
   "type": "module",
   "repository": {
