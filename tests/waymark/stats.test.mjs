@@ -24,7 +24,7 @@ before(() => {
   mkdirSync(join(repo, 'src'));
   writeFileSync(join(repo, 'src', 'billing.js'), 'export function computeInvoiceTotal(items) {\n  return items.reduce((sum, item) => sum + item.price, 0);\n}\n');
 });
-after(() => { rmSync(repo, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+after(() => { rmSync(repo, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); });
 
 test('a fresh state has no lookups and no adoption', () => {
   cli('init');

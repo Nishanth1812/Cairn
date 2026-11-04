@@ -36,7 +36,7 @@ before(() => {
   writeFileSync(join(repo, 'src', 'large.js'), 'const row = 1;\n'.repeat(4000)); // over the 32 KB whole-read threshold
   cli('search', 'computeInvoiceTotal'); // indexes and registers the repo; the hook only records against a registered one
 });
-after(() => { rmSync(repo, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+after(() => { rmSync(repo, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); });
 
 test('broad Bash searches are allowed and receive at most two hints per session', () => {
   const session = 'bash-gate-a';
@@ -95,7 +95,7 @@ test('an unindexed repo receives no hint and is never indexed by the hook', () =
   const decision = bash('unindexed-gate', 'grep -r needle .', other);
   assert.ok(allowed(decision));
   assert.equal(decision, null);
-  rmSync(other, { recursive: true, force: true });
+  rmSync(other, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
 });
 
 test('feedback under 20 characters is refused and records nothing', () => {

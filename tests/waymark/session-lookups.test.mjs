@@ -25,7 +25,7 @@ before(() => {
   cli('init');
   cli('search', 'computeInvoiceTotal');
 });
-after(() => { rmSync(repo, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+after(() => { rmSync(repo, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); });
 
 test('a search run inside a Claude Code session is recorded under that session key', () => {
   const db = new Database(dbPath(), { readonly: true });

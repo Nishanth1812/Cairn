@@ -31,7 +31,7 @@ before(() => {
   writeFileSync(join(repo, 'src', 'billing.js'), 'export function computeInvoiceTotal(items) {\n  return items.reduce((sum, item) => sum + item.price, 0);\n}\n');
   cli('search', 'computeInvoiceTotal'); // registers and indexes the repo, so the hook treats it as indexed
 });
-after(() => { rmSync(repo, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+after(() => { rmSync(repo, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); });
 
 test('repeated sweeps never block unrelated tools', () => {
   const session = 'block-a';

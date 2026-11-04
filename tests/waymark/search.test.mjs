@@ -28,7 +28,7 @@ before(() => {
   writeFileSync(join(repo, 'src', 'report.js'), 'import { computeInvoiceTotal } from "./billing.js";\nexport const monthly = (items) => computeInvoiceTotal(items) * 12; // computeInvoiceTotal computeInvoiceTotal\n');
   writeFileSync(join(repo, 'src', 'private.js'), 'const key = "-----BEGIN PRIVATE KEY-----MIIE-secret-fixture-should-never-escape-----END PRIVATE KEY-----"; export const genericPemProbe = key.length;\n');
 });
-after(() => { rmSync(repo, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+after(() => { rmSync(repo, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); });
 
 test('an unregistered git repo is registered and indexed on first search, and the definition ranks first', () => {
   assert.equal(search('computeInvoiceTotal')[0], 'src/billing.js');

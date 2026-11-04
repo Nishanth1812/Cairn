@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -19,7 +19,7 @@ test('a plain UserPromptSubmit prompt skips hook state and database work', () =>
     const output = execFileSync('node', ['--no-warnings', cli, 'hook', 'user-prompt-submit'], { cwd: process.cwd(), env, encoding: 'utf8', input: JSON.stringify({ prompt: 'Hello, thanks for your help.' }) });
     assert.equal(output, '');
     assert.equal(existsSync(stateDbPath(home)), false);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); }
 });
 
 test('concurrent first lookups return a bounded indexing notice and share one index', async () => {
@@ -86,8 +86,8 @@ test('concurrent first lookups return a bounded indexing notice and share one in
     }
     assert.equal(workerRunning, false, 'the detached index worker must exit after releasing the writer lock');
   } finally {
-    rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
-    rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(repo, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
   }
 });
 
@@ -165,8 +165,8 @@ test('parallel first lookups and a hook register and index one fresh repository'
       assert.equal(check.pragma('quick_check', { simple: true }), 'ok');
     } finally { check.close(); }
   } finally {
-    rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
-    rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(repo, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
   }
 });
 
@@ -211,8 +211,8 @@ test('a ready lookup bounds lock waiting and labels results from the last genera
     assert.match(JSON.stringify(stale.warnings), /last ready generation and may be stale/i);
   } finally {
     if (lockPath) rmSync(lockPath, { force: true });
-    rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
-    rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(repo, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
   }
 });
 
@@ -255,9 +255,11 @@ test('warm refreshes detect modified, untracked, deleted, and branch-switched fi
     execFileSync('git', ['checkout', '--quiet', 'main'], { cwd: repo });
     assert.doesNotMatch(JSON.stringify(search('branchRefreshNeedle').data), /branch\.js/);
     assert.match(JSON.stringify(search('initialRefreshNeedle').data), /entry\.js/);
+    // A refresh that swaps the active generation must not spawn a pointless background re-index.
+    assert.deepEqual(readdirSync(home, { recursive: true }).filter(name => String(name).endsWith('.background.lock')), []);
   } finally {
-    rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
-    rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(repo, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
   }
 });
 
@@ -293,8 +295,8 @@ test('v12 indexes keep reference results while the automatic site-index rebuild 
     assert.ok(complete, 'the legacy generation must be rebuilt in the background');
     assert.deepEqual(refs(), fallback);
   } finally {
-    rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
-    rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(repo, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
   }
 });
 test('reference sites stay current after edits, file changes, and branch switches', () => {
@@ -333,8 +335,8 @@ test('reference sites stay current after edits, file changes, and branch switche
     execFileSync('git', ['checkout', '--quiet', 'main'], { cwd: repo });
     assert.deepEqual(refs('branchReferenceNeedle'), []);
   } finally {
-    rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
-    rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(repo, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
   }
 });
 test('constraint errors mentioning disk space stay distinct and failed index writes preserve the active generation', () => {
@@ -408,8 +410,8 @@ test('constraint errors mentioning disk space stay distinct and failed index wri
     });
     assert.doesNotMatch(hook, /SqliteError|SQLITE_FULL|database or disk is full|stack/i);
   } finally {
-    rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
-    rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(repo, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
   }
 });
 

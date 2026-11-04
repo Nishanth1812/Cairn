@@ -32,5 +32,5 @@ test('reference-sites migration is fresh, upgrades v12, and reruns idempotently'
       assert.equal(upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 13);
       assert.ok(upgraded.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='reference_index_generations'").get());
     } finally { upgraded.close(); }
-  } finally { rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  } finally { rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); }
 });

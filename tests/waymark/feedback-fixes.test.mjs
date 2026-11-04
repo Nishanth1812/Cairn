@@ -29,7 +29,7 @@ before(() => {
   writeFileSync(join(repoA, 'src', 'long.ts'), `${'x'.repeat(240)} lateNeedle ${'y'.repeat(240)}\n`);
   writeFileSync(join(repoB, 'src', 'bill.ts'), 'export function invoiceTotal() {\n  return 1;\n}\n');
 });
-after(() => { rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+after(() => { rmSync(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); });
 
 test('a folder holding several repos is searched across all of them, with the repo name as a path prefix', () => {
   const out = run(root, 'search', 'invoiceTotal certificateIssuedTemplate');

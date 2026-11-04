@@ -12,7 +12,7 @@ const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home,
 const doctor = () => execFileSync('node', ['--no-warnings', BIN, 'doctor'], { env, encoding: 'utf8' });
 
 before(() => { execFileSync('node', ['--no-warnings', BIN, 'init'], { env, encoding: 'utf8' }); });
-after(() => { rmSync(home, { recursive: true, force: true }); });
+after(() => { rmSync(home, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); });
 
 test('doctor is silent about compression until a caveman hook is configured', () => {
   assert.doesNotMatch(doctor(), /output compression/);

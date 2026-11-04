@@ -99,7 +99,9 @@ export async function refreshIndex(db: Database.Database, repoId: string, root: 
     return 'reindexed';
   }
   const refreshed = await withIndexLock(db, repoId, () => refreshIndexLocked(db, repoId, root, options), indexWaitBudgetMs());
-  if (options.reindex && db.name !== ':memory:' && !db.prepare('SELECT 1 FROM reference_index_generations WHERE generation_id = ?').get(state.active_generation)) startBackgroundIndex(db, repoId);
+  // Re-read: the refresh may have swapped the active generation, and the old id has no reference rows.
+  const active = (db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repoId) as { active_generation: number | null } | undefined)?.active_generation;
+  if (options.reindex && db.name !== ':memory:' && active != null && !db.prepare('SELECT 1 FROM reference_index_generations WHERE generation_id = ?').get(active)) startBackgroundIndex(db, repoId);
   return refreshed;
 }
 
