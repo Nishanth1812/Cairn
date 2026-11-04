@@ -190,13 +190,14 @@ export function storeFile(db: Database.Database, repoId: string, generationId: n
 export function populateReferenceSites(db: Database.Database, generationId: number, paths?: string[]): void {
   const files = db.prepare(`SELECT id, path FROM files WHERE generation_id = ?${paths ? ` AND path IN (${paths.map(() => '?').join(',')})` : ''}`).all(generationId, ...(paths ?? [])) as Array<{ id: number; path: string }>;
   const getSymbols = db.prepare('SELECT name, kind, start_line AS startLine, end_line AS endLine FROM symbols WHERE file_id = ? ORDER BY start_line');
+  const targetNames = new Set((db.prepare('SELECT DISTINCT s.name FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.generation_id = ?').all(generationId) as Array<{ name: string }>).map(({ name }) => name));
   const getChunks = db.prepare('SELECT start_line AS startLine, safe_text AS safeText FROM chunks WHERE file_id = ? ORDER BY start_line');
   const insert = db.prepare('INSERT OR IGNORE INTO reference_sites (file_id, identifier, line, group_name, symbol_kind, reference_kind, specifier) VALUES (?, ?, ?, ?, ?, ?, ?)');
   for (const file of files) {
     db.prepare('DELETE FROM reference_sites WHERE file_id = ?').run(file.id);
     const symbols = getSymbols.all(file.id) as Array<{ name: string; kind: string; startLine: number; endLine: number }>;
     const chunks = getChunks.all(file.id) as Array<{ startLine: number; safeText: string }>;
-    for (const site of referenceSites(chunks, symbols, file.path)) {
+    for (const site of referenceSites(chunks, symbols, file.path, targetNames)) {
       insert.run(file.id, site.identifier, site.line, site.groupName, site.symbolKind, site.referenceKind, site.specifier ?? null);
     }
   }

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Indexed `search --refs` sites; 15-run warm median/p95 ms on pinned clones (8975eb9→current): Playwright 7,348/8,653→254/328, Django 1,541/1,829→350/410. 40 interleaved Playwright `context` runs (31fd5bb→current): 332/473→337/435. All 16 compared reference output hashes matched.
 - Warm lookup benchmark (15 runs, median/p95 ms; base 31fd5bb → current): Playwright search 433/893→409/613, context 369/503→421/627, --refs 5,275/5,913→3,823/4,853; Django search 505/841→404/431, context 560/991→375/455, --refs 2,286/2,683→1,908/3,260. Reference results were identical; retrieval hit@1/3/5 remained 70.15/89.55/95.52.
 - The default context budget is 1,000 tokens; hit@1/3/5 stayed at 70.15/89.55/95.52 on the clean retrieval corpus. Context combines adjacent excerpts from the same file, and text search skips comment-only matches and blank rows. Hooks skip prompts without a named code entity, and SessionStart leaves indexing to lookups.
 - Claude Code setup now installs SessionStart, UserPromptSubmit, Stop and PreCompact hooks by default; per-tool PreToolUse hints require `--tool-hints`. Re-running setup removes old Cairn PreToolUse entries while preserving other tools' hooks, and stats mark unobserved native sweeps as unavailable.

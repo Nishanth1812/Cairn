@@ -11,6 +11,7 @@ export function referenceSites(
   chunks: Array<{ startLine: number; safeText: string }>,
   symbols: Array<{ name: string; kind: string; startLine: number; endLine: number }>,
   file: string,
+  targetNames: ReadonlySet<string>,
 ): ReferenceSite[] {
   const hits = new Map<string, ReferenceSite>();
   let lastLine = 0, blockComment = false, stringDelimiter = '';
@@ -35,6 +36,7 @@ export function referenceSites(
       const symbolKind = owner?.kind ?? 'module';
       for (const match of code.matchAll(/[\p{L}\p{N}_$]+/gu)) {
         const identifier = match[0]!;
+        if (!targetNames.has(identifier)) continue;
         if (owner?.name === identifier && owner.startLine === line && /(?:function|class|interface|type|const|let|var)\s+$/.test(code.slice(0, match.index))) continue;
         const site = { identifier, line, groupName, symbolKind, referenceKind };
         hits.set(`${line}:${identifier}:${referenceKind}`, site);
