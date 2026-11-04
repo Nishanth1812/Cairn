@@ -4,8 +4,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
-import { getGitRefreshState } from '../core/gitstate/gitRunner.js';
-import { INDEX_SCHEMA_VERSION, indexRepository, indexRepositoryLocked, indexWaitBudgetMs, IndexingInProgress, storeFile, withIndexLock } from './indexer.js';
+import { getHeadCommit } from '../core/gitstate/gitRunner.js';
+import { INDEX_SCHEMA_VERSION, indexRepository, indexRepositoryLocked, indexWaitBudgetMs, IndexingInProgress, populateReferenceSites, storeFile, withIndexLock } from './indexer.js';
 import { readCandidate } from './walker.js';
 
 const PATCH_LIMIT = 200;
@@ -90,7 +90,9 @@ export async function refreshIndex(db: Database.Database, repoId: string, root: 
     await awaitIndex(db, repoId, root);
     return 'reindexed';
   }
-  return withIndexLock(db, repoId, () => refreshIndexLocked(db, repoId, root, options), indexWaitBudgetMs());
+  const refreshed = await withIndexLock(db, repoId, () => refreshIndexLocked(db, repoId, root, options), indexWaitBudgetMs());
+  if (options.reindex && db.name !== ':memory:' && !db.prepare('SELECT 1 FROM reference_index_generations WHERE generation_id = ?').get(state.active_generation)) startBackgroundIndex(db, repoId);
+  return refreshed;
 }
 
 async function refreshIndexLocked(db: Database.Database, repoId: string, root: string, options: { reindex: boolean }): Promise<Refresh> {
@@ -99,19 +101,11 @@ async function refreshIndexLocked(db: Database.Database, repoId: string, root: s
   if (generation == null) return 'none';
   // Built by an older extractor: rebuild, or a new kind of symbol stays invisible until its file happens to change.
   if (options.reindex && state?.schema_version !== INDEX_SCHEMA_VERSION) { await indexRepositoryLocked(db, repoId, root, {}); return 'reindexed'; }
-  const git = await getGitRefreshState(root);
+  const head = options.reindex ? await getHeadCommit(root) : null;
   const indexedHead = state?.gitHead ?? null;
-  if (options.reindex && git?.clean) {
-    if (indexedHead === git.head) return 'fresh';
-    if (indexedHead !== null && indexedHead !== git.head) {
-      await indexRepositoryLocked(db, repoId, root, { force: true });
-      db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(git.head, repoId);
-      return 'reindexed';
-    }
-  }
-  if (options.reindex && git?.structural) {
-    await indexRepositoryLocked(db, repoId, root, {});
-    db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(git.head, repoId);
+  if (head && indexedHead !== null && indexedHead !== head) {
+    await indexRepositoryLocked(db, repoId, root, { force: true });
+    db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(head, repoId);
     return 'reindexed';
   }
   const rows = db.prepare('SELECT id, path, mtime_ms AS mtimeMs, size_bytes AS sizeBytes FROM files WHERE generation_id = ?').all(generation) as Array<{ id: number; path: string; mtimeMs: number; sizeBytes: number }>;
@@ -137,11 +131,11 @@ async function refreshIndexLocked(db: Database.Database, repoId: string, root: s
   }
   if (options.reindex && (structural || changed.length + gone.length > PATCH_LIMIT)) {
     await indexRepositoryLocked(db, repoId, root, {});
-    if (git) db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(git.head, repoId);
+    if (head) db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(head, repoId);
     return 'reindexed';
   }
   if (!changed.length && !gone.length) {
-    if (git) db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(git.head, repoId);
+    if (head) db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(head, repoId);
     return 'fresh';
   }
 
@@ -160,7 +154,8 @@ async function refreshIndexLocked(db: Database.Database, repoId: string, root: s
       remove.run(row.id);
       if (file) storeFile(db, repoId, generation, file, now, prepared);
     }
+    if (db.prepare('SELECT 1 FROM reference_index_generations WHERE generation_id = ?').get(generation)) populateReferenceSites(db, generation, parsed.map(({ row }) => row.path));
   }).immediate();
-  if (git) db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(git.head, repoId);
+  if (head) db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(head, repoId);
   return 'patched';
 }

@@ -261,6 +261,46 @@ test('warm refreshes detect modified, untracked, deleted, and branch-switched fi
   }
 });
 
+test('reference sites stay current after edits, file changes, and branch switches', () => {
+  const repo = mkdtempSync(join(base, 'reference-refresh-repo-'));
+  const home = mkdtempSync(join(base, 'reference-refresh-home-'));
+  const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'r'), LOCALAPPDATA: join(home, 'l'), XDG_CONFIG_HOME: join(home, 'c'), XDG_STATE_HOME: join(home, 's'), XDG_CACHE_HOME: join(home, 'k') };
+  const refs = (symbol) => JSON.parse(execFileSync('node', ['--no-warnings', cli, 'search', '--refs', symbol, '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
+  const commit = (message) => {
+    execFileSync('git', ['add', 'src'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', message], { cwd: repo });
+  };
+  try {
+    execFileSync('git', ['init', '--quiet', '-b', 'main'], { cwd: repo });
+    mkdirSync(join(repo, 'src'));
+    writeFileSync(join(repo, 'src', 'target.js'), 'export function referenceLifecycleNeedle() {}\n');
+    writeFileSync(join(repo, 'src', 'caller.js'), 'import { referenceLifecycleNeedle } from "./target.js";\nexport function caller() { return referenceLifecycleNeedle(); }\n');
+    commit('main');
+    assert.deepEqual(refs('referenceLifecycleNeedle').map(({ path, referenceKind }) => [path, referenceKind]), [['src/caller.js', 'import'], ['src/caller.js', 'call']]);
+
+    writeFileSync(join(repo, 'src', 'target.js'), 'export function referenceEditedNeedle() {}\n');
+    writeFileSync(join(repo, 'src', 'caller.js'), 'import { referenceEditedNeedle } from "./target.js";\nexport function caller() { return referenceEditedNeedle(); }\n');
+    commit('edit references');
+    assert.deepEqual(refs('referenceLifecycleNeedle'), []);
+    assert.deepEqual(refs('referenceEditedNeedle').map(({ path }) => path), ['src/caller.js', 'src/caller.js']);
+
+    writeFileSync(join(repo, 'src', 'extra.js'), 'import { referenceEditedNeedle } from "./target.js";\nexport const added = referenceEditedNeedle();\n');
+    assert.ok(refs('referenceEditedNeedle').some(({ path }) => path === 'src/extra.js'));
+    rmSync(join(repo, 'src', 'extra.js'));
+    assert.ok(refs('referenceEditedNeedle').every(({ path }) => path !== 'src/extra.js'));
+
+    execFileSync('git', ['checkout', '-b', 'other'], { cwd: repo });
+    writeFileSync(join(repo, 'src', 'branch-target.js'), 'export function branchReferenceNeedle() {}\n');
+    writeFileSync(join(repo, 'src', 'branch-caller.js'), 'export function branchCaller() { return branchReferenceNeedle(); }\n');
+    commit('branch');
+    assert.ok(refs('branchReferenceNeedle').some(({ path }) => path === 'src/branch-caller.js'));
+    execFileSync('git', ['checkout', '--quiet', 'main'], { cwd: repo });
+    assert.deepEqual(refs('branchReferenceNeedle'), []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
 test('constraint errors mentioning disk space stay distinct and failed index writes preserve the active generation', () => {
   const repo = mkdtempSync(join(base, 'index-full-repo-'));
   const home = mkdtempSync(join(base, 'index-full-home-'));

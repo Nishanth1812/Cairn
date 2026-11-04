@@ -204,7 +204,18 @@ CREATE TRIGGER files_bd BEFORE DELETE ON files BEGIN
 END;
 `;
 const v12 = `ALTER TABLE repo_index_state ADD COLUMN git_head TEXT;`;
-const migrations = [{ version: 1, sql: v1 }, { version: 2, sql: v2 }, { version: 3, sql: v3 }, { version: 4, sql: v4 }, { version: 5, sql: v5 }, { version: 6, sql: v6 }, { version: 7, sql: v7 }, { version: 8, sql: v8 }, { version: 9, sql: v9 }, { version: 10, sql: v10 }, { version: 11, sql: v11 }, { version: 12, sql: v12 }];
+const v13 = `
+CREATE TABLE reference_sites (
+  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, identifier TEXT NOT NULL, line INTEGER NOT NULL,
+  group_name TEXT NOT NULL, symbol_kind TEXT NOT NULL, reference_kind TEXT NOT NULL CHECK(reference_kind IN ('call', 'import', 're-export', 'module-level')),
+  specifier TEXT, PRIMARY KEY(file_id, line, identifier, reference_kind)
+);
+CREATE INDEX idx_reference_sites_lookup ON reference_sites(identifier, file_id);
+CREATE TABLE reference_index_generations (
+  generation_id INTEGER PRIMARY KEY REFERENCES index_generations(id) ON DELETE CASCADE
+);
+`;
+const migrations = [{ version: 1, sql: v1 }, { version: 2, sql: v2 }, { version: 3, sql: v3 }, { version: 4, sql: v4 }, { version: 5, sql: v5 }, { version: 6, sql: v6 }, { version: 7, sql: v7 }, { version: 8, sql: v8 }, { version: 9, sql: v9 }, { version: 10, sql: v10 }, { version: 11, sql: v11 }, { version: 12, sql: v12 }, { version: 13, sql: v13 }];
 const checksum = (sql: string) => createHash('sha256').update(sql).digest('hex');
 
 export function migrate(db: Database.Database, now: () => string = () => new Date().toISOString()): number[] {

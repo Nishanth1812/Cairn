@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import { posix as path } from 'node:path';
 import type { SearchResult } from './types.js';
+import { maskCommentsAndStrings } from '../core/referenceSites.js';
 
 export interface ReferenceHit { path: string; line: number; name: string; kind: string; referenceKind: 'call' | 'import' | 're-export' | 'module-level'; groupName: string }
 
@@ -55,11 +56,16 @@ export function searchChunks(db: Database.Database, repoId: string, query: strin
 }
 
 export function searchReferences(db: Database.Database, repoId: string, name: string): ReferenceHit[] {
+  return db.transaction(() => scanReferences(db, repoId, name)).deferred();
+};
+
+function scanReferences(db: Database.Database, repoId: string, name: string): ReferenceHit[] {
   const state = db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repoId) as { active_generation: number | null } | undefined;
   if (state?.active_generation == null) return [];
   const targets = db.prepare('SELECT DISTINCT f.path FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.name = ? AND f.repo_id = ? AND f.generation_id = ?')
     .all(name, repoId, state.active_generation) as Array<{ path: string }>;
   if (!targets.length) return [];
+  if (db.prepare('SELECT 1 FROM reference_index_generations WHERE generation_id = ?').get(state.active_generation)) return searchIndexedReferences(db, repoId, state.active_generation, name, targets);
   // shortcut: identifier spelling stands in for compiler symbol identity; same-name declarations can add false positives until language parsers are available.
   const targetModules = new Set(targets.map(({ path: file }) => stripSourceExtension(file)));
   const symbols = db.prepare('SELECT f.path, s.name, s.kind, s.start_line AS startLine, s.end_line AS endLine FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.repo_id = ? AND f.generation_id = ? ORDER BY f.path, s.start_line')
@@ -122,32 +128,23 @@ export function searchReferences(db: Database.Database, repoId: string, name: st
   return [...hits.values()].sort((a, b) => a.path.localeCompare(b.path) || (a.groupName === b.groupName ? a.line - b.line : a.groupName === 'module level' ? -1 : b.groupName === 'module level' ? 1 : a.groupName.localeCompare(b.groupName)));
 }
 
+
+function searchIndexedReferences(db: Database.Database, repoId: string, generationId: number, name: string, targets: Array<{ path: string }>): ReferenceHit[] {
+  const targetModules = new Set(targets.map(({ path: file }) => stripSourceExtension(file)));
+  const rows = db.prepare("SELECT f.path, r.line, r.group_name AS name, r.symbol_kind AS kind, r.reference_kind AS referenceKind, r.group_name AS groupName FROM reference_sites r JOIN files f ON f.id = r.file_id WHERE r.identifier = ? AND f.repo_id = ? AND f.generation_id = ? AND f.language IN ('typescript', 'javascript', 'python', 'go', 'rust', 'java', 'c', 'cpp')")
+    .all(name, repoId, generationId) as ReferenceHit[];
+  const wildcards = db.prepare("SELECT f.path, r.line, r.specifier FROM reference_sites r JOIN files f ON f.id = r.file_id WHERE r.identifier = '' AND r.specifier IS NOT NULL AND f.repo_id = ? AND f.generation_id = ? AND f.language IN ('typescript', 'javascript', 'python', 'go', 'rust', 'java', 'c', 'cpp')")
+    .all(repoId, generationId) as Array<{ path: string; line: number; specifier: string }>;
+  for (const wildcard of wildcards) {
+    if (!targetModules.has(resolveModule(wildcard.path, wildcard.specifier))) continue;
+    rows.push({ path: wildcard.path, line: wildcard.line, name: 'module level', kind: 'module', referenceKind: 're-export', groupName: 'module level' });
+  }
+  const hits = new Map(rows.map((hit) => [`${hit.path}:${hit.line}:${hit.referenceKind}`, hit]));
+  return [...hits.values()].sort((a, b) => a.path.localeCompare(b.path) || (a.groupName === b.groupName ? a.line - b.line : a.groupName === 'module level' ? -1 : b.groupName === 'module level' ? 1 : a.groupName.localeCompare(b.groupName)));
+}
 function escapeRegex(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function stripSourceExtension(value: string): string { return value.replace(/\.(?:[cm]?[jt]sx?)$/i, ''); }
 function resolveModule(file: string, specifier: string): string { return stripSourceExtension(path.normalize(path.join(path.dirname(file), specifier))); }
-
-function maskCommentsAndStrings(line: string, initial: { blockComment: boolean; stringDelimiter: string }, save: (state: { blockComment: boolean; stringDelimiter: string }) => void, python: boolean): string {
-  let output = '', quote = initial.stringDelimiter;
-  let blockComment = initial.blockComment;
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i]!, next = line[i + 1];
-    if (blockComment) { if (char === '*' && next === '/') { blockComment = false; i++; } output += ' '; continue; }
-    if (quote) {
-      if (line.startsWith(quote, i)) { output += ' '.repeat(quote.length); i += quote.length - 1; quote = ''; continue; }
-      if (char === '\\') { output += '  '; i++; continue; }
-      output += ' ';
-      continue;
-    }
-    if (char === '/' && next === '/') break;
-    if (char === '/' && next === '*') { blockComment = true; output += '  '; i++; continue; }
-    if (python && char === '#') break;
-    if (python && (line.startsWith('"""', i) || line.startsWith("'''", i))) { quote = line.slice(i, i + 3); output += '   '; i += 2; continue; }
-    if (char === '"' || char === "'" || char === '`') { quote = char; output += ' '; continue; }
-    output += char;
-  }
-  save({ blockComment, stringDelimiter: quote === '`' || quote.length === 3 ? quote : '' });
-  return output;
-}
 
 export function countSearchFiles(db: Database.Database, repoId: string, query: string): number {
   const terms = query.match(/[\p{L}\p{N}_]+/gu) ?? [];
