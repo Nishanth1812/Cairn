@@ -215,7 +215,14 @@ CREATE TABLE reference_index_generations (
   generation_id INTEGER PRIMARY KEY REFERENCES index_generations(id) ON DELETE CASCADE
 );
 `;
-const migrations = [{ version: 1, sql: v1 }, { version: 2, sql: v2 }, { version: 3, sql: v3 }, { version: 4, sql: v4 }, { version: 5, sql: v5 }, { version: 6, sql: v6 }, { version: 7, sql: v7 }, { version: 8, sql: v8 }, { version: 9, sql: v9 }, { version: 10, sql: v10 }, { version: 11, sql: v11 }, { version: 12, sql: v12 }, { version: 13, sql: v13 }];
+const v14 = `
+CREATE TABLE index_directories (
+  generation_id INTEGER NOT NULL REFERENCES index_generations(id) ON DELETE CASCADE,
+  path TEXT NOT NULL, mtime_ms INTEGER, ignore_mtime_ms INTEGER, ignore_size INTEGER,
+  PRIMARY KEY(generation_id, path)
+);
+`;
+const migrations = [{ version: 1, sql: v1 }, { version: 2, sql: v2 }, { version: 3, sql: v3 }, { version: 4, sql: v4 }, { version: 5, sql: v5 }, { version: 6, sql: v6 }, { version: 7, sql: v7 }, { version: 8, sql: v8 }, { version: 9, sql: v9 }, { version: 10, sql: v10 }, { version: 11, sql: v11 }, { version: 12, sql: v12 }, { version: 13, sql: v13 }, { version: 14, sql: v14 }];
 const checksum = (sql: string) => createHash('sha256').update(sql).digest('hex');
 
 export function migrate(db: Database.Database, now: () => string = () => new Date().toISOString()): number[] {

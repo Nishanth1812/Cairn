@@ -1,14 +1,15 @@
 import type Database from 'better-sqlite3';
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { getHeadCommit } from '../core/gitstate/gitRunner.js';
-import { INDEX_SCHEMA_VERSION, indexRepository, indexRepositoryLocked, indexWaitBudgetMs, IndexingInProgress, populateReferenceSites, storeFile, withIndexLock } from './indexer.js';
+import { applyIndexChanges, INDEX_SCHEMA_VERSION, indexRepository, indexRepositoryLocked, indexWaitBudgetMs, IndexingInProgress, withIndexLock } from './indexer.js';
 import { readCandidate } from './walker.js';
 
 const PATCH_LIMIT = 200;
+const STAT_BATCH_SIZE = 128;
 export type Refresh = 'fresh' | 'patched' | 'reindexed' | 'none';
 
 function alive(pid: number | undefined): boolean {
@@ -86,9 +87,8 @@ async function awaitIndex(db: Database.Database, repoId: string, root: string): 
 
 /**
  * Bring the active index in line with the disk so a search never answers from stale files.
- * Modified and deleted files are found by stat and patched in place (milliseconds); a new or removed file
- * shows up as a directory newer than the index and, when `reindex` is set, triggers the incremental index.
- * shortcut: new files are detected through directory mtimes, so a file created without touching its directory is missed until the next index.
+ * Modified and deleted files are found by stat and patched in place; directory snapshots detect
+ * structural and ignore-rule changes when `reindex` is set.
  */
 export async function refreshIndex(db: Database.Database, repoId: string, root: string, options: { reindex: boolean }): Promise<Refresh> {
   const state = db.prepare('SELECT active_generation, schema_version FROM repo_index_state WHERE repo_id = ?').get(repoId) as { active_generation: number | null; schema_version: number } | undefined;
@@ -125,23 +125,30 @@ async function refreshIndexLocked(db: Database.Database, repoId: string, root: s
   const rows = db.prepare('SELECT id, path, mtime_ms AS mtimeMs, size_bytes AS sizeBytes FROM files WHERE generation_id = ?').all(generation) as Array<{ id: number; path: string; mtimeMs: number; sizeBytes: number }>;
   const changed: Array<{ row: (typeof rows)[number]; info: { mtimeMs: number; size: number } }> = [];
   const gone: number[] = [];
-  await Promise.all(rows.map(async (row) => {
-    const info = await stat(join(root, row.path)).catch(() => null);
-    if (!info) gone.push(row.id);
-    else if (Math.round(info.mtimeMs) !== row.mtimeMs || info.size !== row.sizeBytes) changed.push({ row, info });
-  }));
-
-  let structural = false;
-  // shortcut: any create/delete/rename in an indexed directory forces one full rebuild (a process that makes a directory per run rebuilds per run), upgrade to comparing directory listings.
-  if (options.reindex) {
-    const directories = [...new Set(rows.map((row) => dirname(row.path)))];
-    await Promise.all(directories.map(async (directory) => {
-      const info = await stat(join(root, directory)).catch(() => null);
-      if (!info || info.mtimeMs > builtAt) structural = true;
+  for (let offset = 0; offset < rows.length; offset += STAT_BATCH_SIZE) {
+    await Promise.all(rows.slice(offset, offset + STAT_BATCH_SIZE).map(async (row) => {
+      const info = await stat(join(root, row.path)).catch(() => null);
+      if (!info) gone.push(row.id);
+      else if (Math.round(info.mtimeMs) !== row.mtimeMs || info.size !== row.sizeBytes) changed.push({ row, info });
     }));
   }
+
+  let structural = false;
+  if (options.reindex) {
+    const directories = db.prepare('SELECT path, mtime_ms AS mtimeMs, ignore_mtime_ms AS ignoreMtimeMs, ignore_size AS ignoreSize FROM index_directories WHERE generation_id = ?').all(generation) as Array<{ path: string; mtimeMs: number | null; ignoreMtimeMs: number | null; ignoreSize: number | null }>;
+    if (!directories.length) structural = true;
+    for (let offset = 0; offset < directories.length; offset += STAT_BATCH_SIZE) {
+      await Promise.all(directories.slice(offset, offset + STAT_BATCH_SIZE).map(async (directory) => {
+        const [info, ignore] = await Promise.all([
+          stat(join(root, directory.path)).catch(() => null),
+          stat(join(root, directory.path, '.gitignore')).catch(() => null),
+        ]);
+        if (!info || directory.mtimeMs === null || Math.round(info.mtimeMs) !== directory.mtimeMs || (ignore ? Math.round(ignore.mtimeMs) : null) !== directory.ignoreMtimeMs || (ignore?.size ?? null) !== directory.ignoreSize) structural = true;
+      }));
+    }
+  }
   if (options.reindex && (structural || changed.length + gone.length > PATCH_LIMIT)) {
-    await indexRepositoryLocked(db, repoId, root, {});
+    await indexRepositoryLocked(db, repoId, root, { patchSmall: true });
     if (head) db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(head, repoId);
     return 'reindexed';
   }
@@ -152,20 +159,9 @@ async function refreshIndexLocked(db: Database.Database, repoId: string, root: s
 
   const parsed = await Promise.all(changed.map(async ({ row, info }) => ({ row, file: await readCandidate(join(root, row.path), row.path, info) })));
   const now = new Date().toISOString();
-  const prepared = {
-    file: db.prepare('INSERT INTO files (repo_id, generation_id, path, content_hash, mtime_ms, size_bytes, language, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
-    symbol: db.prepare('INSERT INTO symbols (file_id, name, kind, start_line, end_line) VALUES (?, ?, ?, ?, ?)'),
-    chunk: db.prepare('INSERT INTO chunks (file_id, ordinal, start_line, end_line, content_hash, safe_text, search_extra, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
-    meta: db.prepare('INSERT INTO file_search_meta(file_id, path_text, symbol_text) VALUES (?, ?, ?)'),
-  };
   db.transaction(() => {
-    const remove = db.prepare('DELETE FROM files WHERE id = ?');
-    for (const id of gone) remove.run(id);
-    for (const { row, file } of parsed) {
-      remove.run(row.id);
-      if (file) storeFile(db, repoId, generation, file, now, prepared);
-    }
-    if (db.prepare('SELECT 1 FROM reference_index_generations WHERE generation_id = ?').get(generation)) populateReferenceSites(db, generation, parsed.map(({ row }) => row.path));
+    applyIndexChanges(db, repoId, generation, parsed.map(({ row, file }) => ({ path: row.path, file, oldId: row.id })), gone, now);
+    db.prepare('UPDATE index_generations SET fingerprint = ? WHERE id = ?').run(`patched:${randomUUID()}`, generation);
   }).immediate();
   if (head) db.prepare('UPDATE repo_index_state SET git_head = ? WHERE repo_id = ?').run(head, repoId);
   return 'patched';

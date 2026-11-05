@@ -237,6 +237,8 @@ test('warm refreshes detect modified, untracked, deleted, and branch-switched fi
     execFileSync('git', ['add', 'src'], { cwd: repo });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'main'], { cwd: repo });
     assert.match(JSON.stringify(search('initialRefreshNeedle').data), /entry\.js/);
+    const activeGeneration = () => { const db = new Database(stateDbPath(home), { readonly: true }); try { return db.prepare('SELECT active_generation FROM repo_index_state').get().active_generation; } finally { db.close(); } };
+    const originalGeneration = activeGeneration();
     const backgroundLocks = () => readdirSync(home, { recursive: true }).filter(name => String(name).endsWith('.background.lock')).map(name => readFileSync(join(home, String(name)), 'utf8'));
     const locksAfterFirstIndex = backgroundLocks();
 
@@ -244,8 +246,10 @@ test('warm refreshes detect modified, untracked, deleted, and branch-switched fi
     assert.match(JSON.stringify(search('modifiedRefreshNeedle').data), /entry\.js/);
     writeFileSync(join(repo, 'src', 'untracked.js'), 'export function untrackedRefreshNeedle() { return 3; }\n');
     assert.match(JSON.stringify(search('untrackedRefreshNeedle').data), /untracked\.js/);
+    assert.equal(activeGeneration(), originalGeneration, 'a small file addition should update the active generation');
     rmSync(join(repo, 'src', 'entry.js'));
     assert.doesNotMatch(JSON.stringify(search('modifiedRefreshNeedle').data), /entry\.js/);
+    assert.equal(activeGeneration(), originalGeneration, 'a small file deletion should update the active generation');
     execFileSync('git', ['checkout', '--', 'src/entry.js'], { cwd: repo });
     rmSync(join(repo, 'src', 'untracked.js'));
 

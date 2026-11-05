@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { stateDbPath } from './stateDb.mjs';
 import { after, before, test } from 'node:test';
@@ -50,6 +50,14 @@ test('a new file is searchable immediately', () => {
   assert.deepEqual(search('zzNewFileProbe'), ['src/extra.js']);
 });
 
+test('a file added inside a previously empty directory becomes searchable', () => {
+  const empty = join(repo, 'src', 'previously-empty');
+  mkdirSync(empty);
+  search('computeInvoiceTotal');
+  writeFileSync(join(empty, 'later.js'), 'export const zzEmptyDirectoryNeedle = true;\n');
+  assert.ok(search('zzEmptyDirectoryNeedle').includes('src/previously-empty/later.js'));
+});
+
 test('a deleted file stops matching', () => {
   unlinkSync(join(repo, 'src', 'extra.js'));
   assert.deepEqual(search('zzNewFileProbe'), []);
@@ -66,6 +74,94 @@ test('a search after a directory change with no content change re-stamps the ind
 test('words inside a camelCase name match, and so do their stems', () => {
   assert.ok(search('invoice').includes('src/billing.js'));
   assert.ok(search('computing totals').includes('src/billing.js'));
+});
+
+test('question words do not pull unrelated files into a specific lookup', () => {
+  writeFileSync(join(repo, 'src', 'question-noise.js'), 'export function where() { return true; }\n');
+  writeFileSync(join(repo, 'src', 'specific.js'), 'export const zzSpecificNeedle = true;\n');
+  const matches = search('where is zzSpecificNeedle');
+  assert.ok(matches.includes('src/specific.js'));
+  assert.ok(!matches.includes('src/question-noise.js'));
+  assert.ok(search('where').includes('src/question-noise.js'));
+});
+
+test('question words do not boost an unrelated path in ranking', () => {
+  writeFileSync(join(repo, 'src', 'a.js'), 'export function lookup() { return zzRankProbe; }\n');
+  writeFileSync(join(repo, 'src', 'where.js'), 'export function lookup() { return zzRankProbe; }\n');
+  assert.equal(search('where is zzRankProbe')[0], 'src/a.js');
+});
+
+test('ignored directories are not re-included by their own ignore files', () => {
+  mkdirSync(join(repo, 'vendor'));
+  mkdirSync(join(repo, 'cache'));
+  writeFileSync(join(repo, '.gitignore'), 'vendor/\n!vendor/nested.js\ncache/*\n!cache/keep.js\n');
+  writeFileSync(join(repo, 'vendor', '.gitignore'), '!nested.js\n');
+  writeFileSync(join(repo, 'vendor', 'nested.js'), 'export const zzIgnoredVendor = true;\n');
+  writeFileSync(join(repo, 'cache', 'keep.js'), 'export const zzReincludedCache = true;\n');
+  assert.deepEqual(search('zzIgnoredVendor'), []);
+  assert.ok(search('zzReincludedCache').includes('cache/keep.js'));
+});
+
+test('editing an ignore file refreshes which files are searchable', () => {
+  const ignore = join(repo, '.gitignore');
+  writeFileSync(ignore, 'src/ignored-until-edited.js\n');
+  writeFileSync(join(repo, 'src', 'ignored-until-edited.js'), 'export const zzUnignoredProbe = true;\n');
+  assert.deepEqual(search('zzUnignoredProbe'), []);
+  writeFileSync(ignore, '');
+  utimesSync(ignore, new Date(), new Date(Date.now() + 1000));
+  assert.ok(search('zzUnignoredProbe').includes('src/ignored-until-edited.js'));
+  unlinkSync(ignore);
+});
+
+test('reference lookup finds existing callers when a definition is added by an edit', () => {
+  writeFileSync(join(repo, 'src', 'emerging-caller.js'), 'export function callEmerging() { return emergingTargetNeedle(); }\n');
+  writeFileSync(join(repo, 'src', 'emerging-target.js'), 'export function otherTarget() {}\n');
+  search('emergingTargetNeedle');
+  writeFileSync(join(repo, 'src', 'emerging-target.js'), 'export function emergingTargetNeedle() { return 42; }\n');
+  const refs = JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'search', '--refs', 'emergingTargetNeedle', '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
+  assert.ok(refs.some((hit) => hit.path === 'src/emerging-caller.js'));
+});
+
+test('reference ranking edges follow edits to callers and definitions', () => {
+  const target = join(repo, 'src', 'edge-target.js'), caller = join(repo, 'src', 'edge-caller.js');
+  writeFileSync(target, 'export function edgeTargetNeedle() {}\n');
+  writeFileSync(caller, 'export function callEdgeNeedle() { return edgeTargetNeedle(); }\n');
+  const edgeCount = (name) => {
+    const db = new Database(stateDbPath(home), { readonly: true });
+    try { return db.prepare('SELECT COUNT(*) AS n FROM edges e JOIN symbols source ON source.id = e.source_symbol_id JOIN symbols target ON target.id = e.target_symbol_id WHERE source.name = ? AND target.name = ?').get('callEdgeNeedle', name).n; }
+    finally { db.close(); }
+  };
+  search('edgeTargetNeedle');
+  assert.equal(edgeCount('edgeTargetNeedle'), 1);
+  writeFileSync(caller, 'export function callEdgeNeedle() { return 12; }\n');
+  search('callEdgeNeedle');
+  assert.equal(edgeCount('edgeTargetNeedle'), 0);
+  writeFileSync(caller, 'export function callEdgeNeedle() { return futureEdgeNeedle(); }\n');
+  search('callEdgeNeedle');
+  writeFileSync(target, 'export function futureEdgeNeedle() { return 123; }\n');
+  search('futureEdgeNeedle');
+  assert.equal(edgeCount('futureEdgeNeedle'), 1);
+});
+
+test('a failed incremental file addition rolls back and can be retried', () => {
+  writeFileSync(join(repo, 'src', 'stable.js'), 'export const zzStableBeforeFailure = true;\n');
+  assert.ok(search('zzStableBeforeFailure').includes('src/stable.js'));
+  const db = new Database(stateDbPath(home));
+  try {
+    db.exec("CREATE TRIGGER reject_test_file BEFORE INSERT ON files WHEN NEW.path = 'src/blocked.js' BEGIN SELECT RAISE(ABORT, 'injected index failure'); END");
+    writeFileSync(join(repo, 'src', 'blocked.js'), 'export const zzRetryAfterFailure = true;\n');
+    const failed = spawnSync('node', ['--no-warnings', BIN, 'search', 'zzRetryAfterFailure', '--json'], { cwd: repo, env, encoding: 'utf8' });
+    assert.notEqual(failed.status, 0);
+    assert.match(failed.stdout, /injected index failure/);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM files WHERE path = 'src/stable.js'").get().n, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM files WHERE path = 'src/blocked.js'").get().n, 0);
+    db.exec('DROP TRIGGER reject_test_file');
+    assert.ok(search('zzRetryAfterFailure').includes('src/blocked.js'));
+    assert.ok(search('zzStableBeforeFailure').includes('src/stable.js'));
+  } finally {
+    db.exec('DROP TRIGGER IF EXISTS reject_test_file');
+    db.close();
+  }
 });
 
 test('a small --budget cuts the list and says how many were left out', () => {
@@ -94,6 +190,15 @@ test('context shows a window around the match when the only hit is bigger than t
   const text = execFileSync('node', ['--no-warnings', BIN, 'context', 'zzNeedleInside', '--budget', '400'], { cwd: repo, env, encoding: 'utf8' });
   assert.match(text, /zzNeedleInside/);
   assert.ok(text.length < 400 * 6, `expected a clipped window, got ${text.length} chars`);
+});
+
+test('context keeps an oversized matching line within the token budget', () => {
+  writeFileSync(join(repo, 'src', 'long-line.js'), `export const hugeLine = "${'x'.repeat(3000)} zzLongLineNeedle ${'y'.repeat(3000)}";\n`);
+  const output = execFileSync('node', ['--no-warnings', BIN, 'context', 'zzLongLineNeedle', '--budget', '200', '--json'], { cwd: repo, env, encoding: 'utf8' });
+  const { data } = JSON.parse(output);
+  assert.ok(data.estimatedTokens <= 200);
+  assert.match(data.items[0].safeText, /zzLongLineNeedle/);
+  assert.equal(data.isTruncated, true);
 });
 
 test('context merges adjacent excerpts from the same file into one range', () => {

@@ -1,5 +1,6 @@
 import { estimateTokens } from '../core/estimate/tokenEstimator.js';
 import type { BoundedContextPackage, RankedChunk, SelectedChunk } from './types.js';
+import { queryTerms } from './query.js';
 
 // Below this many spare tokens a clipped window says too little to be worth showing.
 const MIN_WINDOW_TOKENS = 150;
@@ -7,17 +8,27 @@ const MIN_WINDOW_TOKENS = 150;
 /** The lines of a chunk around its first query match that fit `maxTokens`, with the line range they cover. */
 function clipToBudget(chunk: RankedChunk, query: string, maxTokens: number): RankedChunk {
   const lines = chunk.safeText.split(/\r?\n/);
-  const terms = query.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
+  const terms = queryTerms(query).map(term => term.toLowerCase());
   const anchor = Math.max(0, lines.findIndex(line => terms.some(term => line.toLowerCase().includes(term))));
-  let start = anchor, end = anchor + 1, used = estimateTokens(lines[anchor] ?? '');
+  const anchorLine = lines[anchor] ?? '';
+  if (estimateTokens(anchorLine) > maxTokens) {
+    const maxChars = Math.floor(maxTokens * 4 / 1.1);
+    const match = terms.map(term => anchorLine.toLowerCase().indexOf(term)).find(index => index >= 0) ?? 0;
+    let from = Math.max(0, Math.min(match - Math.floor(maxChars / 2), anchorLine.length - maxChars));
+    let to = from + maxChars;
+    if (from > 0 && /[\uDC00-\uDFFF]/.test(anchorLine[from]!)) from++;
+    if (to < anchorLine.length && /[\uD800-\uDBFF]/.test(anchorLine[to - 1]!)) to--;
+    return { ...chunk, safeText: anchorLine.slice(from, to), startLine: chunk.startLine + anchor, endLine: chunk.startLine + anchor };
+  }
+  let start = anchor, end = anchor + 1;
   // Grow one line at a time, after the match first (a signature is followed by its body), until the budget is spent.
   for (let grew = true; grew;) {
     grew = false;
     for (const next of [end < lines.length ? end : -1, start > 0 ? start - 1 : -1]) {
       if (next < 0) continue;
-      const cost = estimateTokens(lines[next]!);
-      if (used + cost > maxTokens) continue;
-      used += cost; grew = true;
+      const candidate = lines.slice(next === end ? start : next, next === end ? next + 1 : end).join('\n');
+      if (estimateTokens(candidate) > maxTokens) continue;
+      grew = true;
       if (next === end) end++; else start--;
     }
   }
