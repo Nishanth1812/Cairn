@@ -5,6 +5,7 @@ import { shouldExcludePath } from '../core/security/paths.js';
 import { containsSecret, redactSecrets } from '../core/security/secretScanner.js';
 
 export interface PreviousFile { mtimeMs: number; sizeBytes: number; hash: string }
+export interface DirectorySnapshot { path: string; mtimeMs: number | null; ignoreMtimeMs: number | null; ignoreSize: number | null }
 export interface CandidateFile {
   path: string; content: string; contentHash: string; mtimeMs: number; sizeBytes: number; language?: string; unchanged?: boolean;
 }
@@ -44,7 +45,7 @@ function compileRules(lines: string[], base: string): IgnoreRule[] {
   return result;
 }
 
-function ignored(path: string, rules: IgnoreRule[]): boolean {
+function ignored(path: string, rules: IgnoreRule[], directory = false): boolean {
   let excluded = false;
   for (const rule of rules) {
     if (rule.base && !path.startsWith(`${rule.base}/`)) continue;
@@ -53,26 +54,31 @@ function ignored(path: string, rules: IgnoreRule[]): boolean {
     const candidates = rule.anchored
       ? rule.directoryOnly ? parts.map((_, index) => parts.slice(0, index + 1).join('/')) : [relativePath]
       : parts;
-    const matches = candidates.some((part) => rule.regex.test(part) && (!rule.directoryOnly || part !== relativePath || relativePath.includes('/')));
+    const matches = candidates.some((part) => rule.regex.test(part) && (!rule.directoryOnly || directory || part !== relativePath || relativePath.includes('/')));
     if (matches) excluded = !rule.negate;
   }
   return excluded;
 }
 
-export async function walkRepository(repoRoot: string, previous: Map<string, PreviousFile> = new Map(), onWarning: () => void = () => undefined): Promise<CandidateFile[]> {
+export async function walkRepository(repoRoot: string, previous: Map<string, PreviousFile> = new Map(), onWarning: () => void = () => undefined, onDirectory?: (snapshot: DirectorySnapshot) => void): Promise<CandidateFile[]> {
   const root = resolve(repoRoot);
   const paths: Array<{ absolute: string; path: string }> = [];
   const visit = async (directory: string, inheritedRules: IgnoreRule[] = []): Promise<void> => {
+    const metadata = onDirectory ? await Promise.all([stat(directory).catch(() => null), stat(join(directory, '.gitignore')).catch(() => null)]) : undefined;
     let rules = inheritedRules;
     try { rules = [...rules, ...compileRules((await readFile(join(directory, '.gitignore'), 'utf8')).split(/\r?\n/), relative(root, directory).split(sep).join('/'))]; } catch { /* no ignore file */ }
     let entries;
     try { entries = await readdir(directory, { withFileTypes: true }); } catch { onWarning(); return; }
+    if (onDirectory && metadata) onDirectory({ path: relative(root, directory).split(sep).join('/') || '.', mtimeMs: metadata[0] ? Math.round(metadata[0].mtimeMs) : null, ignoreMtimeMs: metadata[1] ? Math.round(metadata[1].mtimeMs) : null, ignoreSize: metadata[1]?.size ?? null });
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
       const absolute = join(directory, entry.name);
       const path = relative(root, absolute).split(sep).join('/');
       if (shouldExcludePath(path) || entry.name === '.gitignore') continue;
-      if (entry.isDirectory()) { await visit(absolute, rules); continue; }
+      if (entry.isDirectory()) {
+        if (ignored(path, rules, true)) continue;
+        await visit(absolute, rules); continue;
+      }
       if (!entry.isFile()) continue;
       if (ignored(path, rules)) continue;
       paths.push({ absolute, path });

@@ -2,11 +2,12 @@ import type Database from 'better-sqlite3';
 import { posix as path } from 'node:path';
 import type { SearchResult } from './types.js';
 import { maskCommentsAndStrings } from '../core/referenceSites.js';
+import { queryTerms } from './query.js';
 
 export interface ReferenceHit { path: string; line: number; name: string; kind: string; referenceKind: 'call' | 'import' | 're-export' | 'module-level'; groupName: string }
 
 export function searchChunks(db: Database.Database, repoId: string, query: string, limit = 20): SearchResult[] {
-  const terms = query.match(/[\p{L}\p{N}_]+/gu) ?? [];
+  const terms = queryTerms(query);
   if (!terms.length || !Number.isFinite(limit) || limit < 1) return [];
   const match = terms.map(term => `"${term.replaceAll('"', '""')}"`).join(' OR ');
   const state = db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repoId) as { active_generation: number | null } | undefined;
@@ -147,7 +148,7 @@ function stripSourceExtension(value: string): string { return value.replace(/\.(
 function resolveModule(file: string, specifier: string): string { return stripSourceExtension(path.normalize(path.join(path.dirname(file), specifier))); }
 
 export function countSearchFiles(db: Database.Database, repoId: string, query: string): number {
-  const terms = query.match(/[\p{L}\p{N}_]+/gu) ?? [];
+  const terms = queryTerms(query);
   if (!terms.length) return 0;
   const match = terms.map(term => `"${term.replaceAll('"', '""')}"`).join(' OR ');
   const state = db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repoId) as { active_generation: number | null } | undefined;
