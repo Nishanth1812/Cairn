@@ -16,7 +16,7 @@ export async function setupWeft(options: SetupOptions) {
     const dir = harness === 'claude-code' ? join(options.home, '.claude') : harness === 'codex' ? join(options.home, '.codex') : join(options.home, '.config', 'opencode');
     if (!existsSync(dir) && harness !== 'claude-code') continue;
     if (harness === 'claude-code') {
-      const bin = options.bin ?? (process.argv[1] ? `node "${realpathSync(resolve(process.argv[1])).replace(/\\/g, '/')}"` : 'cairn waymark');
+      const bin = options.bin ?? (process.argv[1] ? `node "${realpathSync(resolve(process.argv[1])).replace(/\\/g, '/')}"` : 'cairn context');
       results.push(options.uninstall || (!options.hooks && !options.toolHints)
         ? await uninstallClaudeHooks({ home: options.home, global: true, dryRun: options.dryRun })
         : await installClaudeHooks({ home: options.home, global: true, dryRun: options.dryRun, bin, toolHints: options.toolHints }));

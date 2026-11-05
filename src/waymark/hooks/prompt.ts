@@ -69,7 +69,7 @@ export async function runPromptHook(options: { cwd?: string; stateDir: string; p
 
 const LARGE_READ_BYTES = 32 * 1024;
 const MAX_ADVISORIES = 2;
-// Binary files are not text lookups: Waymark cannot search them, and opening a screenshot is not a sweep.
+// Binary files are not text lookups: Cairn Context cannot search them, and opening a screenshot is not a sweep.
 const BINARY_FILE = /\.(?:png|jpe?g|gif|webp|bmp|ico|svg|pdf)$/i;
 
 // A Bash command that searches files: grep, rg, ag or find as its first word of a command, after an optional sudo or xargs. A pipe filter ("npm test | grep fail") is not a search.
@@ -78,7 +78,7 @@ export function isBashSearch(command: string): boolean {
   return command.split(/&&|\|\||;|\n|\(/).some((segment) => BASH_SEARCH.test(segment.trim()));
 }
 
-// "grep -c FAILED /tmp/test.log": a search whose file arguments all lie outside the repo is not a code search Waymark could have answered.
+// "grep -c FAILED /tmp/test.log": a search whose file arguments all lie outside the repo is not a code search Cairn Context could have answered.
 export function searchesOutsideRepo(command: string, cwd: string, root: string | null): boolean {
   if (!root) return false;
   const segments = command.split(/&&|\|\||;|\n|\(/).map((segment) => segment.trim()).filter((segment) => BASH_SEARCH.test(segment));
@@ -104,7 +104,7 @@ const BASH_SEARCH_TOOL = 'Bash-search';
 const WHOLE_READ_TOOL = 'Read-whole';
 const SWEEP_TOOLS = ['Grep', 'Glob', BASH_SEARCH_TOOL, WHOLE_READ_TOOL];
 
-const ADVISORY = 'Cairn can answer this: cairn waymark context "<question>" (ranked, token-budgeted). Use grep/read freely for exact strings.';
+const ADVISORY = 'Cairn can answer this: cairn context "<question>" (ranked, token-budgeted). Use grep/read freely for exact strings.';
 const hasWildcard = (path: string) => /[*?{}\[\]]/.test(path);
 
 async function exactFilePath(path: string | undefined, cwd: string): Promise<boolean> {

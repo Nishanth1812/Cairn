@@ -52,15 +52,15 @@ test('repeated sweeps never block unrelated tools', () => {
 
 test('Waymark and chained Bash commands remain allowed', () => {
   const session = 'block-b';
-  assert.equal(denied(bash(session, 'cairn waymark search "computeInvoiceTotal"')), false);
-  assert.equal(denied(bash(session, 'cairn waymark search "x" && echo done')), false);
+  assert.equal(denied(bash(session, 'cairn context search "computeInvoiceTotal"')), false);
+  assert.equal(denied(bash(session, 'cairn context search "x" && echo done')), false);
 });
 
 test('feedback must cite a query Waymark ran in this session', () => {
   cliAs('block-other', 'search', 'computeInvoiceTotal'); // the query ran in another session
   assert.throws(
     () => cli('feedback', 'the search missed the invoice code', '--kind', 'miss', '--session', 'block-c-', '--query', 'computeInvoiceTotal'),
-    (error) => /No Waymark search or context with that query ran in this session/.test(error.stdout),
+    (error) => /No Cairn Context search or context with that query ran in this session/.test(error.stdout),
   );
 });
 

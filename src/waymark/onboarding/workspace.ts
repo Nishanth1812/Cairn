@@ -39,6 +39,6 @@ export async function workspaceHint(dir: string, stateDir: string): Promise<stri
   try {
     migrate(db);
     const repos = await onboardWorkspace(db, dir);
-    return repos.length ? `Workspace of ${repos.length} repos (${repos.map((repo) => repo.name).join(', ')}). Run cairn waymark context "<question>" inside each repo before Grep/Glob/Read.` : '';
+    return repos.length ? `Workspace of ${repos.length} repos (${repos.map((repo) => repo.name).join(', ')}). Run cairn context "<question>" inside each repo before Grep/Glob/Read.` : '';
   } finally { db.close(); }
 }

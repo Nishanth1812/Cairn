@@ -38,6 +38,16 @@ test('a folder holding several repos is searched across all of them, with the re
   assert.match(out.stdout, /mailer\/src\/mail\.ts/);
 });
 
+test('a repository name in the middle of a query is not treated as a repository argument', () => {
+  assert.equal(run(repoA, 'repos', 'register', repoA).status, 0);
+  assert.equal(run(repoB, 'repos', 'register', repoB).status, 0);
+  const result = json(repoA, 'context', 'certificateIssuedTemplate', 'billing', 'renderTemplate');
+  assert.equal(result.query, 'certificateIssuedTemplate billing renderTemplate');
+  assert.ok(result.items.some((item) => item.path === 'src/mail.ts'));
+  const selected = json(repoA, 'context', 'invoiceTotal', '--repo', 'billing');
+  assert.ok(selected.items.some((item) => item.path === 'src/bill.ts'));
+});
+
 test('a top-level constant is a definition, and it outranks a README that mentions it', () => {
   const out = json(repoA, 'search', 'certificateIssuedTemplate');
   assert.equal(out[0].path, 'src/mail.ts');
@@ -53,6 +63,13 @@ test('a chunk that only imports a name does not outrank its definition', () => {
 test('prose is penalised unless the query asks for it', () => {
   const score = (query) => json(repoA, 'search', query).find((hit) => hit.path === 'README.md').score;
   assert.ok(score('readme certificateIssuedTemplate') > score('certificateIssuedTemplate'));
+});
+
+test('architecture queries can promote structured knowledge inside docs directories', () => {
+  mkdirSync(join(repoA, 'docs'));
+  writeFileSync(join(repoA, 'docs', 'system.md'), '---\ntype: system\ntitle: Architecture\ndescription: zzKnowledgeProbe\n---\n\nThe zzKnowledgeProbe workflow.\n');
+  const score = (query) => json(repoA, 'search', query).find((hit) => hit.path === 'docs/system.md').score;
+  assert.ok(score('architecture zzKnowledgeProbe') > score('zzKnowledgeProbe'));
 });
 
 test('--exact lists case-insensitive literal matches as file:line, and says when --limit cut the list', () => {
