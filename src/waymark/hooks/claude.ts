@@ -111,7 +111,7 @@ export async function runSessionStartHook(options: { cwd?: string; stateDir: str
           if (files.length) lines.push(`Files: ${files.join(', ')}`);
         }
       }
-      lines.push('Explore code with `cairn waymark context "<question>"` or `cairn waymark search "<term>"` in the shell before Grep/Glob/Read; then Read with offset and limit.');
+      lines.push('Explore code with `cairn context "<question>"` or `cairn context search "<term>"` in the shell before Grep/Glob/Read; then Read with offset and limit.');
       let output = lines.join('\n');
       while (estimateTokens(output) > 400) { output = lines.slice(0, -1).join('\n') + '\n' + lines.at(-1); if (lines.length <= 1) break; lines.splice(1, 1); }
       return redactSafe(output);
@@ -171,7 +171,7 @@ export async function installClaudeHooks(options: { projectRoot?: string; home?:
   for (const event of EVENTS) {
     const entries = [...(updated.hooks?.[event] ?? [])];
     const cleaned = entries.map((entry) => ({ ...entry, hooks: (entry.hooks ?? []).filter((hook) => !isWeftHook(hook)) })).filter((entry) => (entry.hooks ?? []).length);
-    if (event !== 'PreToolUse' || options.toolHints) cleaned.push(hookEntry(event, options.bin ?? 'cairn waymark'));
+    if (event !== 'PreToolUse' || options.toolHints) cleaned.push(hookEntry(event, options.bin ?? 'cairn context'));
     if (cleaned.length) updated.hooks![event] = cleaned;
     else delete updated.hooks![event];
   }

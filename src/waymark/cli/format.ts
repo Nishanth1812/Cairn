@@ -1,8 +1,9 @@
 import type { ExactMatch, SymbolHit } from '../context/lookup.js';
+import { queryTerms as meaningfulTerms } from '../context/query.js';
 
 type Location = { path: string; startLine: number; endLine: number; safeText: string; symbols?: string[]; defines?: string[] };
 
-const queryTerms = (query: string): string[] => query.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
+const queryTerms = (query: string): string[] => meaningfulTerms(query).map(term => term.toLowerCase());
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** Names the symbol the query is about when the chunk has one, else the first symbol it mentions. */
@@ -16,7 +17,7 @@ function header(item: Location, query = '', includeSymbol = true): string {
 /** The first line that holds a query term, so a hit shows why it matched; the chunk's first line when none does. */
 function matchingLine(item: Location, query: string): string {
   const lines = item.safeText.split(/\r?\n/);
-  const terms = (query.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []);
+  const terms = queryTerms(query);
   const matches = (candidate: string) => terms.some(term => candidate.toLowerCase().includes(term));
   const line = lines.find(candidate => matches(candidate) && !/^\s*(?:\/\/|\/\*|\*|#|<!--)/.test(candidate)) ?? lines.find(matches) ?? lines.find(candidate => candidate.trim()) ?? '';
   return line.trim().slice(0, 200);

@@ -35,7 +35,7 @@ try {
   run(npm, ['install', '--prefix', prefix, tarball]);
 
   const bin = join(prefix, 'node_modules', '.bin', process.platform === 'win32' ? 'cairn.cmd' : 'cairn');
-  const invoke = (args) => run(bin, ['waymark', ...args], { cwd: temp });
+  const invoke = (args) => run(bin, ['context', ...args], { cwd: temp });
   invoke(['--version']);
   invoke(['--help']);
   invoke(['init']);

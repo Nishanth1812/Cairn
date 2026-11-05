@@ -11,21 +11,24 @@ import { performance } from 'node:perf_hooks';
 export interface CliIo { stdout: (text: string) => void; stderr: (text: string) => void }
 export interface CliResult { code: number; data?: unknown; warnings?: string[]; errors?: string[]; status?: string }
 
-const HELP = `cairn waymark — local-first code index and task memory for AI coding agents
+const HELP = `cairn context — local-first code index and task memory for AI coding agents
 
-Usage: cairn waymark <command> [options]
+Usage: cairn context "<question>" [options]
+       cairn context <command> [options]
 
-Commands: init, doctor, onboard, instructions, repos, index, search, context, task,
-          intent, health, portfolio, stats, bench,
+Commands: init, setup, auto, doctor, onboard, instructions, repos, index, search, task,
+          checkpoint, intent, health, portfolio, verify, feedback, stats, bench, hooks,
           clean, migrate devpulse
 
-Search: cairn waymark search "<words>" [repo] ranks code by relevance.
+Search: cairn context search "<words>" [repo] ranks code by relevance.
   --exact lists every case-insensitive literal match (file:line; not a regex); --kind function|class|interface|type|method|variable lists definitions (use * for all);
   --refs <symbol> lists import, re-export, call, and module-level usage sites;
   Queries like "class definitions in backend" also return matching symbols;
   --limit N caps the list. Run from a folder of repos to search all of them.
 
 Global flags: --json --quiet --verbose --help --version`;
+
+const COMMANDS = new Set(['init', 'setup', 'auto', 'doctor', 'hook', 'hooks', 'onboard', 'instructions', 'repos', 'index', 'search', 'context', 'task', 'checkpoint', 'intent', 'health', 'portfolio', 'verify', 'feedback', 'stats', 'bench', 'clean', 'migrate', 'help']);
 
 function parseGlobal(args: string[]): { args: string[]; json: boolean; quiet: boolean; verbose: boolean } {
   const result = { args: [] as string[], json: false, quiet: false, verbose: false };
@@ -55,7 +58,8 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = { stdout:
     }
   }
   const parsed = parseGlobal(argv);
-  const args = parsed.args;
+  const args = parsed.args[0] === '--' ? ['context', ...parsed.args.slice(1)]
+    : parsed.args[0] && !parsed.args[0].startsWith('-') && !COMMANDS.has(parsed.args[0]) ? ['context', ...parsed.args] : parsed.args;
   const command = commandName(args);
   let result: CliResult;
   if (args.includes('--version') || args[0] === '--version') result = { code: 0, data: { version: '0.1.0' } };
@@ -95,7 +99,7 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = { stdout:
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(resolve(process.argv[1]))).href) {
-  // A reader that closes early (`cairn waymark search x | head`) is not an error.
+  // A reader that closes early (`cairn context search x | head`) is not an error.
   process.stdout.on('error', (error: NodeJS.ErrnoException) => { if (error.code !== 'EPIPE') throw error; process.exit(process.exitCode ?? 0); });
   runCli().then((code) => { process.exitCode = code; }).catch((error: unknown) => { process.stderr.write(`${redactSafe(error instanceof Error ? error.message : String(error))}\n`); process.exitCode = 1; });
 }

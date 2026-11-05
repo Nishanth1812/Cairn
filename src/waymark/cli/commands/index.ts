@@ -55,7 +55,7 @@ function reportTiming(phase: string, elapsed: number): void {
 }
 
 function database(required = true): Database.Database {
-  if (required && !existsSync(dbFile)) fail('Waymark is not initialized. Run `cairn waymark init` first.', 3);
+  if (required && !existsSync(dbFile)) fail('Cairn Context is not initialized. Run `cairn context init` first.', 3);
   const started = performance.now();
   const db = openDatabase(paths.state);
   try { migrate(db); databaseElapsed = performance.now() - started; } catch (error) { db.close(); throw error; }
@@ -99,8 +99,8 @@ function repoRow(db: Database.Database, query?: string): { id: string; root_path
   const match = query ? rows.find((row) => row.id === query || row.display_name.toLowerCase() === query.toLowerCase() || same(row.root_path, resolve(query)))
     : rows.find((row) => same(row.root_path, root));
   if (match) return match;
-  if (!query && !rows.length) fail('No repositories are registered. Run `cairn waymark repos register` first.', 3);
-  if (!query) fail(`Current directory is not registered: ${root}. Run from inside a git repo (it is indexed on first use), from a folder that holds git repos to search them all, or register it with \`cairn waymark repos register\`.`, 3);
+  if (!query && !rows.length) fail('No repositories are registered. Run `cairn context repos register` first.', 3);
+  if (!query) fail(`Current directory is not registered: ${root}. Run from inside a git repo (it is indexed on first use), from a folder that holds git repos to search them all, or register it with \`cairn context repos register\`.`, 3);
   fail(`Repository not found: ${query}`, 3);
 }
 function allRepos(db: Database.Database) {
@@ -162,18 +162,18 @@ export async function runCommand(args: string[], compactOutput = false): Promise
   }
   if (group === 'auto') {
     const action = sub;
-    if (!['on', 'off', 'status'].includes(action ?? '')) fail('Use `cairn waymark auto on|off|status`.', 2);
+    if (!['on', 'off', 'status'].includes(action ?? '')) fail('Use `cairn context auto on|off|status`.', 2);
     const config = await loadConfig();
     if (action !== 'status') { config.autoOnboard = action === 'on'; await saveConfig(config); }
     return { code: 0, data: { autoOnboard: config.autoOnboard } };
   }
   if (group === 'doctor') {
-    if (!existsSync(dbFile) && !args.includes('--repair')) fail('Waymark is not initialized. Run `cairn waymark init` first.', 3);
+    if (!existsSync(dbFile) && !args.includes('--repair')) fail('Cairn Context is not initialized. Run `cairn context init` first.', 3);
     const preflight = await repairCorruptDatabase(paths.state, args.includes('--repair'));
     if (preflight.integrity !== 'ok' && !preflight.backup && preflight.integrity !== 'missing') {
       const home = process.env.HOME ?? process.env.USERPROFILE ?? process.cwd();
       const integrations = await checkIntegrations(home);
-      return { code: 6, data: { node: process.version, database: preflight.integrity, repositories: null, weftOnPath: commandOnPath('cairn'), integrations }, warnings: [`SQLite quick_check: ${preflight.integrity}`, 'Run `cairn waymark doctor --repair` to move the damaged database aside and create a fresh one.'] };
+      return { code: 6, data: { node: process.version, database: preflight.integrity, repositories: null, weftOnPath: commandOnPath('cairn'), integrations }, warnings: [`SQLite quick_check: ${preflight.integrity}`, 'Run `cairn context doctor --repair` to move the damaged database aside and create a fresh one.'] };
     }
     const db = database(false);
     try {
@@ -192,9 +192,9 @@ export async function runCommand(args: string[], compactOutput = false): Promise
   if (group === 'hooks') {
     const options = { projectRoot: process.cwd(), home: process.env.HOME ?? process.env.USERPROFILE, global: args.includes('--global'), dryRun: args.includes('--dry-run') };
     // Calling node on the real CLI path skips the npm shim (~270ms per hook on Windows); --portable keeps plain `weft`.
-    if (sub === 'install') return { code: 0, data: await installClaudeHooks({ ...options, bin: args.includes('--portable') || !process.argv[1] ? 'cairn waymark' : `node "${realpathSync(resolve(process.argv[1])).replace(/\\/g, '/')}"` }) };
+    if (sub === 'install') return { code: 0, data: await installClaudeHooks({ ...options, bin: args.includes('--portable') || !process.argv[1] ? 'cairn context' : `node "${realpathSync(resolve(process.argv[1])).replace(/\\/g, '/')}"` }) };
     if (sub === 'uninstall') return { code: 0, data: await uninstallClaudeHooks(options) };
-    fail('Use `cairn waymark hooks install|uninstall [--global] [--dry-run]`.', 2);
+    fail('Use `cairn context hooks install|uninstall [--global] [--dry-run]`.', 2);
   }
   if (group === 'onboard') {
     const target = positional(args.slice(1))[0] ?? process.cwd();
@@ -211,7 +211,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
   }
   if (group === 'instructions') {
     const action = sub;
-    if (action !== 'sync' && action !== 'check') fail('Use `cairn waymark instructions sync` or `check`.', 2);
+    if (action !== 'sync' && action !== 'check') fail('Use `cairn context instructions sync` or `check`.', 2);
     const root = await getGitRoot(process.cwd()); if (!root) fail('Current directory is not a Git repository.', 3);
     const dry = args.includes('--dry-run') || action === 'check';
     const checks = await Promise.all([
@@ -241,17 +241,17 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       } finally { db.close(); }
     }
     if (sub === 'unregister') {
-      const name = positional(rest)[0]; if (!name) fail('Usage: cairn waymark repos unregister <repo>', 2);
+      const name = positional(rest)[0]; if (!name) fail('Usage: cairn context repos unregister <repo>', 2);
       const db = database(); try { const repo = repoRow(db, name); db.prepare('DELETE FROM repositories WHERE id = ?').run(repo.id); return { code: 0, data: { unregistered: repo.display_name } }; } finally { db.close(); }
     }
     if (sub === 'fuzzy') {
-      const query = positional(rest).join(' '); if (!query) fail('Usage: cairn waymark repos fuzzy <query>', 2);
+      const query = positional(rest).join(' '); if (!query) fail('Usage: cairn context repos fuzzy <query>', 2);
       const db = database(); try { const rows = allRepos(db); const result = fuzzyFindRepo(query, rows.map(({ name, rootPath, registeredAt }) => ({ name, rootPath, registeredAt }))); return { code: result.match ? 0 : 4, data: result, warnings: result.match ? [] : ['No unique repository match.'] }; } finally { db.close(); }
     }
     if (sub === 'status') {
       const db = database(); try { const repo = repoRow(db, positional(rest)[0]); const git = await getWorkingTreeStatus(repo.root_path); const index = db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repo.id); const config = db.prepare('SELECT config_json FROM repositories WHERE id = ?').get(repo.id) as { config_json: string }; const note = (JSON.parse(config.config_json) as { weftOnboardingNote?: string }).weftOnboardingNote; return { code: 0, data: { repo, git, index, ...(note ? { onboardingNote: note } : {}) } }; } finally { db.close(); }
     }
-    fail('Use `cairn waymark repos register|unregister|list|fuzzy|status`.', 2);
+    fail('Use `cairn context repos register|unregister|list|fuzzy|status`.', 2);
   }
   if (group === 'index') {
     const db = database(); try { const repo = repoRow(db, positional(args.slice(1))[0]); const config = await loadConfig(); const note = await indexWithinLimit(repo.root_path, config.maxTrackedFiles, db, repo.id); return note ? { code: 0, data: { skipped: true, note } } : { code: 0, data: await indexRepository(db, repo.id, repo.root_path, { force: args.includes('--force') }) }; } finally { db.close(); }
@@ -260,16 +260,15 @@ export async function runCommand(args: string[], compactOutput = false): Promise
     const refsName = option(args, '--refs');
     if (refsName && group !== 'search') fail('--refs is available with search only.', 2);
     const values = positional(args.slice(1));
-    if (!values.length && !refsName) fail(`Usage: cairn waymark ${group} <query> [repo]`, 2);
+    if (!values.length && !refsName) fail(`Usage: cairn context ${group} <query> [repo]`, 2);
     await mkdir(paths.state, { recursive: true }); // first use on a fresh machine needs no separate init
     const db = database(false); try {
-      let repoIndex = -1;
-      for (let i = values.length - 1; i >= 0; i--) {
-        if (db.prepare('SELECT 1 FROM repositories WHERE display_name = ? OR id = ?').get(values[i], values[i])) { repoIndex = i; break; }
-      }
-      const repoArg = repoIndex < 0 ? undefined : values[repoIndex];
+      const explicitRepo = option(args, '--repo');
+      const last = values.at(-1);
+      const repoIndex = !explicitRepo && last && values.length > (refsName ? 0 : 1) && db.prepare('SELECT 1 FROM repositories WHERE display_name = ? OR id = ?').get(last, last) ? values.length - 1 : -1;
+      const repoArg = explicitRepo ?? (repoIndex < 0 ? undefined : values[repoIndex]);
       const query = refsName ?? values.filter((_value, index) => index !== repoIndex).join(' ');
-      if (!query) fail(`Usage: cairn waymark ${group} <query> [repo]`, 2);
+      if (!query) fail(`Usage: cairn context ${group} <query> [repo]`, 2);
       let repos: Array<ReturnType<typeof repoRow>>;
       try { repos = [repoRow(db, repoArg)]; } catch (error) {
         // An unregistered git checkout (a new clone or worktree) is registered and indexed on first use instead of failing.
@@ -329,7 +328,7 @@ export async function runCommand(args: string[], compactOutput = false): Promise
       const fit = <T>(items: T[], text: (item: T) => string): T[] => { let used = 0; const kept: T[] = []; for (const item of items) { used += estimateTokens(text(item)); if (kept.length && used > budget) break; kept.push(item); } return kept; };
       const rankedHits = (count: number) => repos.flatMap((repo) => rankCandidates(searchChunks(db, repo.id, query, count), query).map((hit) => prefixed(repo, hit))).sort((a, b) => b.score - a.score);
       if (group === 'search' && refsName) {
-        if (values.length > (repoIndex < 0 ? 0 : 1)) fail('Usage: cairn waymark search --refs <symbol> [repo]', 2);
+        if (values.length > (repoIndex < 0 ? 0 : 1)) fail('Usage: cairn context search --refs <symbol> [repo]', 2);
         const all = repos.flatMap((repo) => searchReferences(db, repo.id, refsName).map((hit) => prefixed(repo, hit)));
         const shown = fit(all.slice(0, limit), (hit) => `${hit.path}:${hit.line} [${hit.referenceKind}] ${hit.groupName}`);
         const formatted = formatReferences(shown, all.length);
@@ -380,16 +379,16 @@ export async function runCommand(args: string[], compactOutput = false): Promise
         const parts = positional(rest); const repos = allRepos(db); const last = parts.at(-1);
         const target = last ? repos.find((repo) => repo.name.toLowerCase() === last.toLowerCase() || repo.id === last || repo.rootPath.toLowerCase() === resolve(last).toLowerCase()) : undefined;
         const title = (target ? parts.slice(0, -1) : parts).join(' ');
-        if (!title) fail('Usage: cairn waymark task start <title> [repo]', 2);
+        if (!title) fail('Usage: cairn context task start <title> [repo]', 2);
         return { code: 0, data: createTask(db, repoRow(db, target?.id).id, title) };
       }
-      if (sub === 'resume') { const id = positional(rest)[0]; if (!id) fail('Usage: cairn waymark task resume <id>', 2); const task = db.prepare('SELECT repo_id FROM tasks WHERE id = ?').get(id) as { repo_id: string } | undefined; if (!task) fail(`Task not found: ${id}`, 3); const repo = repoRow(db, task.repo_id); const git = await getWorkingTreeStatus(repo.root_path); const fingerprint = computeWorkingTreeFingerprint(git, await getHeadCommit(repo.root_path) ?? '', git.branch); return { code: 0, data: resumeTask(db, id, fingerprint) }; }
-      if (sub === 'checkpoint') { const id = positional(rest)[0]; if (!id) fail('Usage: cairn waymark task checkpoint <id>', 2); const task = db.prepare('SELECT repo_id FROM tasks WHERE id = ?').get(id) as { repo_id: string } | undefined; if (!task) fail(`Task not found: ${id}`, 3); const repo = repoRow(db, task.repo_id); const git = await getWorkingTreeStatus(repo.root_path); const fingerprint = computeWorkingTreeFingerprint(git, await getHeadCommit(repo.root_path) ?? '', git.branch); return { code: 0, data: saveCheckpoint(db, { taskId: id, workingTreeFingerprint: fingerprint, objective: '', status: 'active', findings: [], decisions: [], verification: [], nextAction: '' }) }; }
-      fail('Use `cairn waymark task start|resume|checkpoint`.', 2);
+      if (sub === 'resume') { const id = positional(rest)[0]; if (!id) fail('Usage: cairn context task resume <id>', 2); const task = db.prepare('SELECT repo_id FROM tasks WHERE id = ?').get(id) as { repo_id: string } | undefined; if (!task) fail(`Task not found: ${id}`, 3); const repo = repoRow(db, task.repo_id); const git = await getWorkingTreeStatus(repo.root_path); const fingerprint = computeWorkingTreeFingerprint(git, await getHeadCommit(repo.root_path) ?? '', git.branch); return { code: 0, data: resumeTask(db, id, fingerprint) }; }
+      if (sub === 'checkpoint') { const id = positional(rest)[0]; if (!id) fail('Usage: cairn context task checkpoint <id>', 2); const task = db.prepare('SELECT repo_id FROM tasks WHERE id = ?').get(id) as { repo_id: string } | undefined; if (!task) fail(`Task not found: ${id}`, 3); const repo = repoRow(db, task.repo_id); const git = await getWorkingTreeStatus(repo.root_path); const fingerprint = computeWorkingTreeFingerprint(git, await getHeadCommit(repo.root_path) ?? '', git.branch); return { code: 0, data: saveCheckpoint(db, { taskId: id, workingTreeFingerprint: fingerprint, objective: '', status: 'active', findings: [], decisions: [], verification: [], nextAction: '' }) }; }
+      fail('Use `cairn context task start|resume|checkpoint`.', 2);
     } finally { db.close(); }
   }
   if (group === 'checkpoint') {
-    const id = sub; if (!id) fail('Usage: cairn waymark checkpoint <id>', 2);
+    const id = sub; if (!id) fail('Usage: cairn context checkpoint <id>', 2);
     const db = database(); try {
       const task = db.prepare('SELECT repo_id FROM tasks WHERE id = ?').get(id) as { repo_id: string } | undefined;
       if (!task) fail(`Task not found: ${id}`, 3);
@@ -400,9 +399,9 @@ export async function runCommand(args: string[], compactOutput = false): Promise
   }
   if (group === 'intent') {
     const path = join(paths.instructions, 'intent.md');
-    if (sub === 'show') { if (!existsSync(path)) fail('intent.md is missing. Run `cairn waymark init` first.', 3); return { code: 0, data: parseIntent(await readFile(path, 'utf8')) }; }
+    if (sub === 'show') { if (!existsSync(path)) fail('intent.md is missing. Run `cairn context init` first.', 3); return { code: 0, data: parseIntent(await readFile(path, 'utf8')) }; }
     if (sub === 'edit') { await mkdir(paths.instructions, { recursive: true }); if (!existsSync(path)) await writeFile(path, generateDefaultIntent(), 'utf8'); const editor = process.env.EDITOR ?? process.env.VISUAL; if (!editor) fail('$EDITOR is not set.', 3); await new Promise<void>((resolvePromise, reject) => { const child = spawn(editor, [path], { stdio: 'inherit' }); child.once('error', reject); child.once('exit', (code: number | null) => code === 0 ? resolvePromise() : reject(new Error(`Editor exited with code ${code}`))); }); return { code: 0, data: { path } }; }
-    fail('Use `cairn waymark intent show|edit`.', 2);
+    fail('Use `cairn context intent show|edit`.', 2);
   }
   if (group === 'health') { const db = database(); try { const repo = repoRow(db, positional(args.slice(1))[0]); const data = await checkRepoHealth(repo.root_path); return { code: findings(data) ? 4 : 0, data, warnings: findings(data) ? ['Health findings were reported.'] : [] }; } finally { db.close(); } }
   if (group === 'portfolio') { const db = database(); try { const repos = allRepos(db).map((repo) => ({ name: repo.name, rootPath: repo.rootPath, registeredAt: repo.registeredAt })); const data = await generatePortfolioSummary(repos); return { code: findings(data.totals) ? 4 : 0, data }; } finally { db.close(); } }
@@ -417,15 +416,15 @@ export async function runCommand(args: string[], compactOutput = false): Promise
   if (group === 'feedback') {
     // The gate reads these rows: an agent that filed verified feedback may run more lookups.
     const note = positional(args.slice(1)).join(' ').trim(), kind = option(args, '--kind'), query = option(args, '--query'), session = option(args, '--session');
-    if (!note || !['miss', 'bad_output', 'error'].includes(kind ?? '') || !query) fail('Usage: cairn waymark feedback "<what went wrong>" --kind miss|bad_output|error --query "<the cairn waymark search you ran>" [--session <key>] [--repo <name>]', 2);
+    if (!note || !['miss', 'bad_output', 'error'].includes(kind ?? '') || !query) fail('Usage: cairn context feedback "<what went wrong>" --kind miss|bad_output|error --query "<the cairn context search you ran>" [--session <key>] [--repo <name>]', 2);
     if (note.length < 20 || note.split(/\s+/).length < 4) fail('Feedback needs what went wrong in at least four words and 20 characters, e.g. the query and what came back.', 2); // the gate trusts feedback, so a one-word note must not unlock it
     const db = database(); try {
-      // Feedback must answer a lookup this Claude session really ran through Waymark, so a made-up query cannot unlock the gate. Session keys are "<session id>-<agent id>"; lookups record "<session id>-".
+      // Feedback must answer a lookup this Claude session really ran through Cairn Context, so a made-up query cannot unlock the gate. Session keys are "<session id>-<agent id>"; lookups record "<session id>-".
       // Without a session key (Codex has none) the search must have run in the last hour.
       const ran = session
         ? db.prepare("SELECT 1 FROM tool_calls WHERE tool IN ('search', 'context') AND query = ? AND session = ? LIMIT 1").get(redactSafe(query), `${session.replace(/-[^-]*$/, '')}-`)
         : db.prepare("SELECT 1 FROM tool_calls WHERE tool IN ('search', 'context') AND query = ? AND observed_at >= ? LIMIT 1").get(redactSafe(query), new Date(Date.now() - 60 * 60 * 1000).toISOString());
-      if (!ran) fail('No Waymark search or context with that query ran in this session. Run cairn waymark search "<query>" first, then file the feedback with the same --query.', 3);
+      if (!ran) fail('No Cairn Context search or context with that query ran in this session. Run cairn context search "<query>" first, then file the feedback with the same --query.', 3);
       let repoId: string | null = null;
       try { repoId = repoRow(db, option(args, '--repo')).id; } catch { /* Feedback is kept even when the repo is not registered. */ }
       const row = db.prepare('INSERT INTO lookup_feedback (repo_id, session, kind, query, note, observed_at) VALUES (?, ?, ?, ?, ?, ?)')
@@ -437,8 +436,8 @@ export async function runCommand(args: string[], compactOutput = false): Promise
     const db = database(); try {
       const stats = getStats(db, duration(option(args, '--since')));
       return { code: 0, data: compactOutput
-        ? `Adoption: ${stats.adoption.percent == null ? 'incomplete (native sweep counts require --tool-hints)' : `${stats.adoption.percent}%`} of observed lookups through Waymark (${stats.adoption.weftCalls} search/context, ${stats.adoption.nativeCalls ?? 'unavailable'} Grep/Glob/Bash search/whole-file Read)
-Waymark returned: ${stats.toolTokens.returned} tokens
+        ? `Adoption: ${stats.adoption.percent == null ? 'incomplete (native sweep counts require --tool-hints)' : `${stats.adoption.percent}%`} of observed lookups through Cairn Context (${stats.adoption.weftCalls} search/context, ${stats.adoption.nativeCalls ?? 'unavailable'} Grep/Glob/Bash search/whole-file Read)
+Cairn Context returned: ${stats.toolTokens.returned} tokens
 Prompt hook: ${stats.promptHook.injections} injections, ${stats.promptHook.returned} tokens
 Read a returned file after a lookup: ${stats.quality.followThroughPercent == null ? 'n/a (no lookups with recorded paths yet)' : `${stats.quality.followThroughPercent}%`}
 Fell back to a sweep after a lookup: ${stats.quality.fallbackPercent == null ? 'n/a' : `${stats.quality.fallbackPercent}%`}; feedback filed: ${stats.quality.feedback.miss} miss, ${stats.quality.feedback.bad_output} bad output, ${stats.quality.feedback.error} error`
@@ -459,7 +458,7 @@ Fell back to a sweep after a lookup: ${stats.quality.fallbackPercent == null ? '
       return { code: 0, data: report };
     } finally { db.close(); }
   }
-  if (group === 'bench') fail('Use `cairn waymark bench retrieval [--repo <name>] [--json]`.', 2);
+  if (group === 'bench') fail('Use `cairn context bench retrieval [--repo <name>] [--json]`.', 2);
   if (group === 'clean') {
     const db = database(); try {
       const scope = option(args, '--scope', 'indexes'); if (!['indexes', 'all'].includes(scope!)) fail('--scope must be indexes or all', 2);

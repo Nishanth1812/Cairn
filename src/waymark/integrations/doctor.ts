@@ -45,7 +45,7 @@ function hookStatus(command: string | undefined): 'missing' | 'installed' | 'sta
 
 export async function checkIntegrations(home: string): Promise<IntegrationCheck[]> {
   const claude = await jsonFile(join(home, '.claude', 'settings.json'));
-  const hookFix = 'cairn waymark setup --harness claude-code';
+  const hookFix = 'cairn context setup --harness claude-code';
   const requiredHooks = ['SessionStart', 'UserPromptSubmit', 'Stop', 'PreCompact'];
   const hookSettings = claude?.hooks && typeof claude.hooks === 'object' ? claude.hooks as Record<string, unknown> : {};
   const hasRequiredHooks = requiredHooks.every((event) => Array.isArray(hookSettings[event]) && (hookSettings[event] as Array<{ hooks?: unknown }>).some((entry) => Array.isArray(entry.hooks) && (entry.hooks as Array<{ command?: unknown }>).some((hook) => typeof hook.command === 'string' && hook.command.includes('# weft-hook'))));
@@ -59,7 +59,7 @@ export async function checkIntegrations(home: string): Promise<IntegrationCheck[
   const instructions: IntegrationCheck[] = instructionChecks.map((result, index) => ({
     id: ['claude-code instructions', 'codex instructions', 'opencode instructions'][index]!,
     status: result.matches ? 'installed' : 'missing',
-    ...(!result.matches ? { fix: `cairn waymark setup --harness ${['claude-code', 'codex', 'opencode'][index]!}` } : {}),
+    ...(!result.matches ? { fix: `cairn context setup --harness ${['claude-code', 'codex', 'opencode'][index]!}` } : {}),
   }));
   const hooks: IntegrationCheck = { id: 'claude-code hooks', status: claudeHookStatus, ...(claudeHookStatus !== 'installed' ? { detail: claudeHookStatus === 'stale' ? 'stale command path' : undefined, fix: hookFix } : {}) };
   // An output-compression hook (caveman) can replace function bodies in Read and git diff output with "body elided", which defeats a search that points at that code. Agents reported it four times.

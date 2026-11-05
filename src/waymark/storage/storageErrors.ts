@@ -28,7 +28,7 @@ export function storageFailure(stateDir: string, error: unknown, neededBytes: nu
   const readOnly = code === 'SQLITE_READONLY' || code === 'EROFS' || code === 'EACCES' || code === 'EPERM';
   const guidance = readOnly
     ? 'The state directory or database is not writable. Check file and directory permissions or remount the filesystem writable, then retry.'
-    : `Free: ${free === undefined ? 'unknown' : formatBytes(free)}; estimated needed: about ${formatBytes(neededBytes)}. Free disk space, run \`cairn waymark clean --scope indexes --yes\`, or set a smaller maxTrackedFiles, then retry.`;
+    : `Free: ${free === undefined ? 'unknown' : formatBytes(free)}; estimated needed: about ${formatBytes(neededBytes)}. Free disk space, run \`cairn context clean --scope indexes --yes\`, or set a smaller maxTrackedFiles, then retry.`;
   return new StorageFailure(
     `Storage error in Cairn state directory ${resolve(stateDir)} (${reason}${error instanceof Error ? error.message : String(error)}). ${guidance}`,
     { cause: error },
