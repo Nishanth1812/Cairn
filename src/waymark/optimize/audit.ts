@@ -108,15 +108,13 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       sessionsWithoutProviderUsage++;
       estimatedTokensWithoutUsage += estimate(summary.toolResultChars);
     }
-    for (const model of summary.models.slice(0, 1)) {
+    for (const [model, usage] of Object.entries(summary.usageByModel)) {
       const totals = modelTotals.get(model) ?? { sessions: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
       totals.sessions++;
-      if (summary.usage) {
-        totals.inputTokens += summary.usage.inputTokens;
-        totals.outputTokens += summary.usage.outputTokens;
-        totals.cacheReadTokens += summary.usage.cacheReadTokens;
-        totals.cacheCreationTokens += summary.usage.cacheCreationTokens;
-      }
+      totals.inputTokens += usage.inputTokens;
+      totals.outputTokens += usage.outputTokens;
+      totals.cacheReadTokens += usage.cacheReadTokens;
+      totals.cacheCreationTokens += usage.cacheCreationTokens;
       modelTotals.set(model, totals);
     }
     // Per-session rows, keyed so sessions stay isolated (cross-session reuse is not serviceable).

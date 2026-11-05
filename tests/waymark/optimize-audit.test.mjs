@@ -83,6 +83,32 @@ const files = (home) => [
 ];
 const snapshot = (home) => files(home).map((file) => { const stats = statSync(file); return { size: stats.size, mtimeMs: stats.mtimeMs }; });
 
+test('attributes usage to each model within a session', () => {
+  const home = writeHome();
+  try {
+    const file = join(home, '.claude', 'projects', 'H--Personal-Projects-demoA', 'multi-model.jsonl');
+    writeFileSync(file, [
+      JSON.stringify(assistant('2026-11-01T10:00:00Z', 'model-a', { input_tokens: 11, output_tokens: 2 }, [])),
+      JSON.stringify(assistant('2026-11-01T10:01:00Z', 'model-b', { input_tokens: 29, output_tokens: 3 }, [])),
+    ].join('\n'));
+    const run = optimize(['audit', '--consent', '--json', '--home', home]);
+    assert.equal(run.status, 0, run.stderr);
+    const models = JSON.parse(run.stdout).data.usage.byModel;
+    assert.equal(models['model-a'].inputTokens, 11);
+    assert.equal(models['model-b'].inputTokens, 29);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('rejects invalid session limits instead of scanning without a bound', () => {
+  const home = writeHome();
+  try {
+    for (const value of ['abc', '0', '-1', '1.5']) {
+      const run = optimize(['audit', '--consent', '--home', home, '--sessions', value]);
+      assert.equal(run.status, 2, `expected invalid limit ${value} to be rejected`);
+    }
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
 test('optimize help exposes coverage and audit; unknown subcommands exit 2', () => {
   const help = optimize(['--help']);
   assert.equal(help.status, 0);

@@ -105,7 +105,12 @@ export async function runOptimize(argv: string[]): Promise<number> {
           `Reading local session history requires consent. The audit would read transcripts under ${home!.replace(/\\/g, '/')}/.claude/projects read-only, change nothing, and produce a local report. Re-run with --consent.`,
           3, 'missing_resource');
       }
-      const report = await runAudit({ home: home!, project, maxSessions: option('--sessions') ? Number(option('--sessions')) : undefined });
+      const limit = option('--sessions');
+      const maxSessions = limit === undefined ? undefined : Number(limit);
+      if (maxSessions !== undefined && (!Number.isSafeInteger(maxSessions) || maxSessions < 1)) {
+        throw new OptimizeError('--sessions requires a positive integer', 2, 'invalid_arguments');
+      }
+      const report = await runAudit({ home: home!, project, maxSessions });
       if (json) return { code: 0, data: report };
       return { code: 0, data: summaryText(report) };
     }

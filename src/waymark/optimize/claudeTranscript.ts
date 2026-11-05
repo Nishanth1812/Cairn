@@ -84,8 +84,8 @@ export interface SessionSummary {
   bytes: number;
   startedAt?: string;
   endedAt?: string;
-  models: string[];
   usage: UsageTotals | null;
+  usageByModel: Record<string, UsageTotals>;
   lines: number;
   malformedLines: number;
   toolCalls: number;
@@ -130,7 +130,7 @@ export class ClaudeTranscript {
   largeOutputChars = 0;
   private startedAt?: string;
   private endedAt?: string;
-  private readonly models = new Map<string, number>();
+  private readonly usageByModel = new Map<string, UsageTotals>();
 
   constructor(readonly sessionId: string, readonly file: string, readonly project: string, readonly bytes: number) {}
 
@@ -151,8 +151,6 @@ export class ClaudeTranscript {
     if (timestamp) { this.startedAt ??= timestamp; this.endedAt = timestamp; }
     const message = isObject(entry.message) ? entry.message : undefined;
     if (!message) return;
-    const model = asString(message.model);
-    if (model) this.models.set(model, (this.models.get(model) ?? 0) + 1);
     if (entry.type === 'assistant') this.absorbAssistant(timestamp, message);
     else if (entry.type === 'user') this.absorbUser(timestamp, message);
   }
@@ -161,10 +159,15 @@ export class ClaudeTranscript {
     const usage = isObject(message.usage) ? message.usage : undefined;
     if (usage) {
       this.usage ??= { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
-      this.usage.inputTokens += asCount(usage.input_tokens) ?? 0;
-      this.usage.outputTokens += asCount(usage.output_tokens) ?? 0;
-      this.usage.cacheReadTokens += asCount(usage.cache_read_input_tokens) ?? 0;
-      this.usage.cacheCreationTokens += asCount(usage.cache_creation_input_tokens) ?? 0;
+      const model = asString(message.model) ?? 'unknown';
+      const modelUsage = this.usageByModel.get(model) ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+      for (const totals of [this.usage, modelUsage]) {
+        totals.inputTokens += asCount(usage.input_tokens) ?? 0;
+        totals.outputTokens += asCount(usage.output_tokens) ?? 0;
+        totals.cacheReadTokens += asCount(usage.cache_read_input_tokens) ?? 0;
+        totals.cacheCreationTokens += asCount(usage.cache_creation_input_tokens) ?? 0;
+      }
+      this.usageByModel.set(model, modelUsage);
     }
     const content = Array.isArray(message.content) ? message.content : [];
     for (const item of content) {
@@ -229,8 +232,8 @@ export class ClaudeTranscript {
       bytes: this.bytes,
       startedAt: this.startedAt,
       endedAt: this.endedAt,
-      models: [...this.models.entries()].sort((a, b) => b[1] - a[1]).map(([model]) => model),
       usage: this.usage ? { ...this.usage } : null,
+      usageByModel: Object.fromEntries(this.usageByModel),
       lines: this.lines,
       malformedLines: this.malformedLines,
       toolCalls: this.toolCalls,
