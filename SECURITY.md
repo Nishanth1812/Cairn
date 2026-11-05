@@ -9,6 +9,6 @@ Please do not open a public issue. Use GitHub's private reporting: **Security â†
 
 - It reads files in git repos you query and stores chunks in a local SQLite database. It makes no network calls.
 - Common sensitive paths, including `.env*` and key files, are excluded. Recognised secret patterns are redacted before storage and output, but detection is not exhaustive. Avoid indexing repositories containing secrets that cannot safely be stored locally, and protect the state directory as you would your source code.
-- `cairn waymark setup` edits `~/.claude/settings.json`, `CLAUDE.md` and `AGENTS.md` (managed blocks only) and `cairn waymark setup --uninstall` reverses it. Use `--dry-run` to preview.
+- `cairn context setup` edits `~/.claude/settings.json`, `CLAUDE.md` and `AGENTS.md` (managed blocks only) and `cairn context setup --uninstall` reverses it. Use `--dry-run` to preview.
 
 In scope: secret leakage into the index or output, hook/instruction edits that damage your config, path traversal, command injection. Only the latest release is supported.
