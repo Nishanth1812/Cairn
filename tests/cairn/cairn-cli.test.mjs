@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -44,6 +44,30 @@ test('a query runs directly after cairn context', () => {
     const reserved = JSON.parse(execFileSync(process.execPath, [bin, 'context', '--', 'doctor', '--json'], { env, cwd: home, encoding: 'utf8' }));
     assert.equal(reserved.command, 'context');
     assert.equal(reserved.data.answer.definition.symbol, 'doctor');
+    // A repo registered under one path spelling (realpath) and queried from a different
+    // spelling of the same directory must still match (Windows runners hand cwds in
+    // 8.3 short form; lookups canonicalize to the registered long path).
+    const aliasHome = join(tmpdir(), 'cairn-query-alias-');
+    const aliasEnv = { ...process.env, HOME: aliasHome, USERPROFILE: aliasHome, APPDATA: join(aliasHome, 'roaming'), LOCALAPPDATA: join(aliasHome, 'local'), XDG_CONFIG_HOME: join(aliasHome, 'config'), XDG_STATE_HOME: join(aliasHome, 'state'), XDG_CACHE_HOME: join(aliasHome, 'cache') };
+    try {
+      execFileSync('git', ['init', '-q', aliasHome]);
+      writeFileSync(join(aliasHome, 'alias.js'), 'export function needleAlias() { return 7; }\n');
+      execFileSync(process.execPath, [bin, 'context', 'repos', 'register', aliasHome], { env: aliasEnv, cwd: aliasHome });
+      // Register happens with the realpath; a symlink alias of the same directory must query fine.
+      const linkPath = join(tmpdir(), 'cairn-query-link-');
+      try { execFileSync('cmd', ['/c', 'mklink', '/J', linkPath, aliasHome]); } catch { /* fallback test below */ }
+      if (existsSync(linkPath)) {
+        const fetched = JSON.parse(execFileSync(process.execPath, [bin, 'context', 'needleAlias', '--json'], { env: aliasEnv, cwd: linkPath, encoding: 'utf8' }));
+        assert.equal(fetched.ok, true);
+      } else {
+        // No symlink support: at minimum the direct query still resolves.
+        const fetched = JSON.parse(execFileSync(process.execPath, [bin, 'context', 'needleAlias', '--json'], { env: aliasEnv, cwd: aliasHome, encoding: 'utf8' }));
+        assert.equal(fetched.ok, true);
+      }
+    } finally {
+      rmSync(aliasHome, { recursive: true, force: true });
+      rmSync(join(tmpdir(), 'cairn-query-link-'), { recursive: true, force: true });
+    }
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
