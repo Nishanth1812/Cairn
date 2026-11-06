@@ -398,7 +398,7 @@ class SessionAccumulator {
         const hash = fingerprint(text);
         if (!hash) return;
         const key = identityKey(file);
-        const record = this.reads.get(key) ?? { path: file, reads: 0, versions: 0, identicalRepeats: 0, firstTimestamp: iso, lastTimestamp: iso, labels: new Set<string>() };
+        const record = this.reads.get(key) ?? { path: file, reads: 0, versions: 0, identicalRepeats: 0, readChars: 0, firstTimestamp: iso, lastTimestamp: iso, labels: new Set<string>() };
         if (hash && !record.labels.has(hash)) {
           record.labels.add(hash);
           record.versions++;
@@ -406,6 +406,7 @@ class SessionAccumulator {
           record.identicalRepeats++;
         }
         record.reads++;
+        record.readChars = (record.readChars ?? 0) + text.length;
         if (iso) record.lastTimestamp = iso;
         this.reads.set(key, record);
       }
@@ -442,6 +443,7 @@ class SessionAccumulator {
         reads: record.reads,
         versions: record.versions,
         identicalRepeats: record.identicalRepeats,
+        readChars: record.readChars,
         firstTimestamp: record.firstTimestamp,
         lastTimestamp: record.lastTimestamp,
       }))

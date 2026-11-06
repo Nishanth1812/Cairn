@@ -185,6 +185,8 @@ test('audit reports observed opportunities with evidence, keeps estimates separa
     assert.equal(read.reads, 3); // two identical plus one after a change
     assert.equal(read.identicalRepeats, 1); // exactly one re-read observed the same content again
     assert.equal(read.versions, 2);
+    assert.ok((read.readChars ?? 0) > 0, 'read chars are measured so the summary can estimate each row’s saving');
+    assert.ok(!read.path.includes('…'), 'read paths are actionable, never truncated behind an ellipsis');
     assert.ok(!report.opportunities.repeatedReads.some((row) => row.path.includes('other.ts') || row.path.includes('single\\read.ts')));
 
     const search = report.opportunities.repeatedSearches.find((row) => row.session === 'session-a');

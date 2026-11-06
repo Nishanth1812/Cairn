@@ -74,7 +74,13 @@ function summaryText(report: Awaited<ReturnType<typeof runAudit>>): string {
   lines.push(`Large tool outputs: ${big.count} result(s) at 20k+ chars (${big.chars} chars, ~${big.estimatedTokens} estimated tokens — estimate, not provider-reported).`);
   if (report.opportunities.repeatedReads.length) {
     lines.push('Top repeated reads (reads / identical re-reads):');
-    for (const row of report.opportunities.repeatedReads.slice(0, 5)) lines.push(`  ${row.project} :: ${row.path} — ${row.reads} reads, ${row.identicalRepeats} seeing unchanged content (fingerprinted)`);
+    for (const row of report.opportunities.repeatedReads.slice(0, 5)) {
+      // Identical re-reads are the avoidable share: estimate them from the read chars,
+      // so each row names its own saving instead of leaving the math to the reader.
+      const repeatChars = Math.round((row.readChars ?? 0) * (row.reads > 0 ? row.identicalRepeats / row.reads : 0));
+      const estTokens = Math.round(repeatChars / 4 * 1.1);
+      lines.push(`  ${row.project} :: ${row.path} — ${row.reads} reads, ${row.identicalRepeats} seeing unchanged content (fingerprinted)${estTokens ? `, ~${estTokens} est. tokens avoidable (estimate)` : ''}`);
+    }
   }
   if (report.opportunities.repeatedSearches.length) {
     lines.push('Top repeated searches:');

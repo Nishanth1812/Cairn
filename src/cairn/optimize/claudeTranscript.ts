@@ -6,7 +6,7 @@ import { createReadStream } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { fingerprint, identityKey, redactAndClip, safeCommandLabel, LARGE_OUTPUT_CHARS, type LargeOutputObservation, type ReadObservation, type SearchObservation, type UsageTotals } from './observations.js';
+import { fingerprint, identityKey, redactAndClip, redactPath, safeCommandLabel, LARGE_OUTPUT_CHARS, type LargeOutputObservation, type ReadObservation, type SearchObservation, type UsageTotals } from './observations.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -221,11 +221,12 @@ export class ClaudeTranscript {
       // counting every file-bearing tool would report writes and edits as repeated reads.
       if (pending.file && !mark && text.trim() && pending.tool.toLowerCase() === 'read') {
         const key = identityKey(pending.file);
-        const record = this.reads.get(key) ?? { path: redactAndClip(pending.file), reads: 0, versions: 0, identicalRepeats: 0, firstTimestamp: timestamp, lastTimestamp: timestamp, labels: new Map() };
+        const record = this.reads.get(key) ?? { path: redactPath(pending.file), reads: 0, versions: 0, identicalRepeats: 0, readChars: 0, firstTimestamp: timestamp, lastTimestamp: timestamp, labels: new Map() };
         const hash = fingerprint(text);
         if (hash && !record.labels.has(hash)) { record.labels.set(hash, hash); record.versions++; }
         else if (hash) record.identicalRepeats++;
         record.reads++;
+        record.readChars = (record.readChars ?? 0) + text.length;
         if (timestamp) record.lastTimestamp = timestamp;
         this.reads.set(key, record);
       }
@@ -249,7 +250,7 @@ export class ClaudeTranscript {
   summary(): SessionSummary {
     const reads = [...this.reads.values()]
       .filter((record) => record.reads > 1)
-      .map((record) => ({ path: record.path, reads: record.reads, versions: record.versions, identicalRepeats: record.identicalRepeats, firstTimestamp: record.firstTimestamp, lastTimestamp: record.lastTimestamp }))
+      .map((record) => ({ path: record.path, reads: record.reads, versions: record.versions, identicalRepeats: record.identicalRepeats, readChars: record.readChars, firstTimestamp: record.firstTimestamp, lastTimestamp: record.lastTimestamp }))
       .sort((a, b) => b.identicalRepeats - a.identicalRepeats || b.reads - a.reads);
     const searches = [...this.searches.values()].filter((record) => record.calls > 1).sort((a, b) => b.calls - a.calls);
     const large = [...this.largeOutputs].sort((a, b) => b.chars - a.chars).slice(0, 5);

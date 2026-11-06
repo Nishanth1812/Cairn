@@ -30,7 +30,7 @@ export interface AuditBounds {
 export interface UsageModelTotals { sessions: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; reasoningTokens?: number }
 interface UsageRecord { id: string; usage: UsageTotals; usageByModel?: Record<string, UsageTotals> }
 
-export interface ReadRow { project: string; session: string; path: string; reads: number; identicalRepeats: number; versions: number; firstTimestamp?: string; lastTimestamp?: string }
+export interface ReadRow { project: string; session: string; path: string; reads: number; identicalRepeats: number; versions: number; readChars?: number; firstTimestamp?: string; lastTimestamp?: string }
 
 export interface SearchRow { project: string; session: string; tool: string; pattern: string; searchPath: string; calls: number; glob?: string; type?: string; include?: string }
 
@@ -218,10 +218,11 @@ function buildReport(input: BuildInput): AuditReport {
     // Per-session rows, keyed so sessions stay isolated (cross-session reuse is not serviceable).
     for (const read of summary.reads) {
       const key = `${summary.project}|${summary.sessionId}|${identityKey(read.path)}`;
-      const row = reads.get(key) ?? { project: summary.project, session: summary.sessionId, path: read.path, reads: 0, identicalRepeats: 0, versions: 0, firstTimestamp: read.firstTimestamp, lastTimestamp: read.lastTimestamp };
+      const row = reads.get(key) ?? { project: summary.project, session: summary.sessionId, path: read.path, reads: 0, identicalRepeats: 0, versions: 0, readChars: 0, firstTimestamp: read.firstTimestamp, lastTimestamp: read.lastTimestamp };
       row.reads += read.reads;
       row.identicalRepeats += read.identicalRepeats;
-      row.versions = read.versions;
+      row.versions += read.versions;
+      row.readChars = (row.readChars ?? 0) + (read.readChars ?? 0);
       if (read.lastTimestamp) row.lastTimestamp = read.lastTimestamp;
       reads.set(key, row);
     }
