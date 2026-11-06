@@ -218,6 +218,92 @@ test('v2 database: session_part tools, compaction excluded, shell command never 
   }
 });
 
+test('reader fails closed on live WAL without mutating the source', async () => {
+  const dir = tempDir('cairn-oc-live-wal-');
+  const dbPath = join(dir, 'opencode.db');
+  const db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+  db.exec('CREATE TABLE session_v2 (id TEXT PRIMARY KEY, project_id TEXT, directory TEXT, time_created INTEGER, time_updated INTEGER); CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, data TEXT);');
+  const insert = db.prepare('INSERT INTO session_v2 VALUES (?,?,?,?,?)');
+  insert.run('old', 'p', '/Work/Case', 1, 2);
+  insert.run('new', 'p', '/Work/Case', 3, 4);
+  insert.run('other', 'p', '/work/case', 5, 6);
+  // Keep the writer open so committed rows remain in the live WAL.
+  try {
+    const mtime = statSync(dbPath).mtimeMs;
+    const beforeFiles = readdirSync(dir).sort();
+    const wal = statSync(`${dbPath}-wal`);
+    const shm = statSync(`${dbPath}-shm`);
+    assert.ok(existsSync(`${dbPath}-wal`));
+    await assert.rejects(() => oc.readOpenCodeDatabase(dbPath, { project: '/Work/Case', maxSessions: 1 }), /stops instead of reporting stale data/);
+    assert.ok(existsSync(`${dbPath}-wal`));
+    assert.ok(existsSync(`${dbPath}-shm`));
+    assert.deepEqual(readdirSync(dir).sort(), beforeFiles);
+    assert.deepEqual([statSync(`${dbPath}-wal`).size, statSync(`${dbPath}-wal`).mtimeMs], [wal.size, wal.mtimeMs]);
+    assert.deepEqual([statSync(`${dbPath}-shm`).size, statSync(`${dbPath}-shm`).mtimeMs], [shm.size, shm.mtimeMs]);
+    assert.equal(statSync(dbPath).mtimeMs, mtime);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('project and session limits select recent matching rows before session reads', async () => {
+  const dir = tempDir('cairn-oc-filter-');
+  const dbPath = buildV2Database(dir);
+  const db = new Database(dbPath);
+  db.prepare('INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?)').run('ses_v2_new', 'proj2', 'slug', '/work/demo', 'Fixture', '2.0.0', Date.parse('2026-11-03T10:00:00Z'), Date.parse('2026-11-03T10:01:00Z'));
+  db.prepare('INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?)').run('ses_v2_other', 'proj2', 'slug', '/Work/demo', 'Fixture', '2.0.0', Date.parse('2026-11-04T10:00:00Z'), Date.parse('2026-11-04T10:01:00Z'));
+  db.close();
+  try {
+    const summary = await oc.readOpenCodeDatabase(dbPath, { project: '/work/demo', maxSessions: 1 });
+    assert.deepEqual(summary.sessions.map((session) => session.sessionId), ['ses_v2_new']);
+    assert.equal(summary.bounds.projectsListed, 2);
+    assert.equal(summary.bounds.sessionsListed, 2);
+    assert.equal(summary.bounds.sessionsScanned, 1);
+    assert.equal(summary.bounds.sessionsSkipped, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('migrated v1+v2 schemas count a session once and use v2 rows once', async () => {
+  const dir = tempDir('cairn-oc-migrated-');
+  const dbPath = buildV1Database(dir);
+  const db = new Database(dbPath);
+  db.exec('CREATE TABLE session_v2 (id TEXT PRIMARY KEY, project_id TEXT, directory TEXT, time_created INTEGER, time_updated INTEGER); CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, data TEXT);');
+  db.prepare('INSERT INTO session_v2 VALUES (?,?,?,?,?)').run('ses_v1', 'proj1', 'C:\\repos\\demo', 100, 200);
+  db.prepare('INSERT INTO session_message VALUES (?,?,?,?,?,?)').run('v2_m', 'ses_v1', 'assistant', 1, 100, JSON.stringify({ type: 'assistant', model: { id: 'm2', providerID: 'p2' }, tokens: { input: 7, output: 3, cache: { read: 0, write: 0 } } }));
+  db.close();
+  try {
+    const summary = await oc.readOpenCodeDatabase(dbPath);
+    assert.equal(summary.schema, 'v1+v2');
+    assert.equal(summary.bounds.sessionsListed, 1);
+    assert.equal(summary.bounds.sessionsScanned, 1);
+    assert.equal(summary.sessions[0].messages, 1);
+    assert.deepEqual(summary.sessions[0].usage, { inputTokens: 7, outputTokens: 3, cacheReadTokens: 0, cacheCreationTokens: 0 });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('search identity includes include filter', async () => {
+  const dir = tempDir('cairn-oc-includes-');
+  const dbPath = buildV1Database(dir);
+  const db = new Database(dbPath);
+  try {
+    db.prepare('INSERT INTO part VALUES (?,?,?,?,?,?)').run('prt_g3', 'msg_asst', 'ses_v1', 9999, 9999, JSON.stringify({ type: 'tool', tool: 'grep', state: { status: 'completed', input: { pattern: 'needleGoal', path: 'C:\\repos\\demo', include: '*.js' }, output: 'match' } }));
+    db.prepare('INSERT INTO part VALUES (?,?,?,?,?,?)').run('prt_g4', 'msg_asst', 'ses_v1', 10000, 10000, JSON.stringify({ type: 'tool', tool: 'grep', state: { status: 'completed', input: { pattern: 'needleGoal', path: 'C:\\repos\\demo', include: '*.js' }, output: 'match' } }));
+    db.close();
+    const summary = await oc.readOpenCodeDatabase(dbPath);
+    assert.equal(summary.sessions[0].searches.length, 2);
+    assert.deepEqual(summary.sessions[0].searches.map((search) => search.include).sort(), ['*.js', '*.ts']);
+  } finally {
+    try { db.close(); } catch { /* already closed */ }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('missing, incompatible, non-sqlite and :memory: databases fail honestly as DataError', async () => {
   const dir = tempDir('cairn-oc-bad-');
   try {

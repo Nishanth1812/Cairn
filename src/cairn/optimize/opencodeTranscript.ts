@@ -34,8 +34,8 @@
 // The pre-SQLite flat-file layout (storage/session|message|part JSON files) is intentionally
 // not read: it is frozen at migration time and has no verified reader here, so sessions that
 // exist only there are reported as unavailable, never as zero.
-import { copyFileSync, existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { existsSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type Database from 'better-sqlite3';
@@ -74,7 +74,17 @@ const isoTime = (value: unknown): string | undefined => {
 const emptyUsage = (): UsageTotals => ({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 });
 const sqliteCode = (error: unknown): string =>
   error instanceof Error && 'code' in error ? String((error as { code?: unknown }).code ?? 'error') : 'error';
-const isSqliteError = (error: unknown): boolean => error instanceof Error && 'code' in error && typeof (error as { code?: unknown }).code === 'string';
+const projectKey = (path: string): string => {
+  if (/^[a-zA-Z]:(?:[\\/]|$)/.test(path) || path.startsWith('\\\\') || path.includes('\\')) return identityKey(path);
+  const absolute = path.startsWith('/');
+  const parts: string[] = [];
+  for (const part of path.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..' && parts.length && parts[parts.length - 1] !== '..') parts.pop();
+    else if (part !== '..' || !absolute) parts.push(part);
+  }
+  return `${absolute ? '/' : ''}${parts.join('/')}`;
+};
 
 // ---------------------------------------------------------------------------
 // Paths (XDG / OPENCODE_DB), mirroring upstream global-roots and database-path.
@@ -106,21 +116,14 @@ export function opencodeDatabasePath(options: OpenCodePathOptions = {}): string 
 
 // ---------------------------------------------------------------------------
 // Read-only opening. Primary path: a file: URI with mode=ro&immutable=1, which
-// tells SQLite to never create or modify any file (no database, journal, WAL or
-// SHM sidecar) and to ignore locks. better-sqlite3 only honours URI filenames
-// when SQLite URI handling is enabled, so SQLITE_USE_URI is set to "1" when unset
-// before the addon first loads; if that cannot take effect (the addon was already
-// loaded without URI support, or URI handling is explicitly disabled), the fallback
-// copies the main database file into a private temp directory, opens the copy
-// read-only there, and removes the copy on close. The source directory is never
-// written in either path. WAL content that has not been checkpointed into the
-// main file is not visible to an immutable read; that makes some recent rows
-// invisible (unknown), never wrong.
+// reads the main file only when no journal sidecars exist. Immutable mode avoids
+// source locks and sidecar creation; live WAL/rollback-journal state is reported unknown.
 // ---------------------------------------------------------------------------
 
 interface OpenHandle {
   db: Db;
   close: () => void;
+  verify: () => void;
 }
 
 async function openReadOnly(databasePath: string): Promise<OpenHandle> {
@@ -130,36 +133,31 @@ async function openReadOnly(databasePath: string): Promise<OpenHandle> {
       `No OpenCode database found at ${databasePath}. Either OpenCode has not run here, its database lives somewhere else (XDG_DATA_HOME / OPENCODE_DB), or it uses a release-channel database (opencode-<channel>.db) that this reader does not discover.`,
     );
   }
-  if (process.env.SQLITE_USE_URI === undefined) process.env.SQLITE_USE_URI = '1';
-  const DatabaseCtor = (await import('better-sqlite3')).default;
-  const uriEnabled = process.env.SQLITE_USE_URI !== '0';
-  if (uriEnabled) {
-    try {
-      const uri = `${pathToFileURL(resolve(databasePath)).href}?mode=ro&immutable=1`;
-      const db = new DatabaseCtor(uri, { readonly: true, fileMustExist: true });
-      return { db, close: () => db.close() };
-    } catch (error) {
-      if (!isSqliteError(error)) throw error;
-      // Fall through to the temp-copy path only for open failures; query failures
-      // on a successfully opened handle are reported by the caller instead.
-    }
+  if (['-wal', '-shm', '-journal'].some((suffix) => existsSync(`${databasePath}${suffix}`))) {
+    throw new DataError(`OpenCode database at ${databasePath} has a live SQLite journal/WAL sidecar; this audit stops instead of reporting stale data. Close OpenCode and retry after SQLite has checkpointed and removed the sidecars; Cairn will not checkpoint or delete them.`);
   }
-  let tempDir: string | undefined;
   try {
-    tempDir = mkdtempSync(join(tmpdir(), 'cairn-opencode-'));
-    const copyPath = join(tempDir, 'opencode.db');
-    copyFileSync(databasePath, copyPath);
-    const db = new DatabaseCtor(copyPath, { readonly: true, fileMustExist: true });
+    const DatabaseCtor = (await import('better-sqlite3')).default;
+    const initial = statSync(databasePath);
+    const uri = `${pathToFileURL(resolve(databasePath)).href}?mode=ro&immutable=1`;
+    const db = new DatabaseCtor(uri, { readonly: true, fileMustExist: true });
+    if (['-wal', '-shm', '-journal'].some((suffix) => existsSync(`${databasePath}${suffix}`))) {
+      db.close();
+      throw new DataError(`OpenCode database at ${databasePath} changed while opening; a fresh consistent read is unavailable and its sessions are excluded as unknown.`);
+    }
     return {
       db,
-      close: () => {
-        try { db.close(); } finally { rmSync(tempDir as string, { recursive: true, force: true }); }
+      close: () => db.close(),
+      verify: () => {
+        const current = statSync(databasePath);
+        if (initial.size !== current.size || initial.mtimeMs !== current.mtimeMs || initial.ctimeMs !== current.ctimeMs || ['-wal', '-shm', '-journal'].some((suffix) => existsSync(`${databasePath}${suffix}`))) {
+          throw new DataError(`OpenCode database at ${databasePath} changed while it was being read; a fresh consistent read is unavailable and its sessions are excluded as unknown.`);
+        }
       },
     };
   } catch (error) {
-    if (tempDir) rmSync(tempDir, { recursive: true, force: true });
     if (error instanceof DataError) throw error;
-    throw new DataError(`OpenCode database at ${databasePath} could not be opened read-only (${sqliteCode(error)}); its sessions are excluded as unknown.`);
+    throw new DataError(`OpenCode database at ${databasePath} could not be opened in immutable read-only mode (${sqliteCode(error)}); its sessions are excluded as unknown.`);
   }
 }
 
@@ -397,9 +395,10 @@ class SessionAccumulator {
     if (event.tool === 'read') {
       const file = asString(input.filePath) ?? asString(input.path);
       if (file) {
+        const hash = fingerprint(text);
+        if (!hash) return;
         const key = identityKey(file);
         const record = this.reads.get(key) ?? { path: file, reads: 0, versions: 0, identicalRepeats: 0, firstTimestamp: iso, lastTimestamp: iso, labels: new Set<string>() };
-        const hash = fingerprint(text);
         if (hash && !record.labels.has(hash)) {
           record.labels.add(hash);
           record.versions++;
@@ -415,7 +414,7 @@ class SessionAccumulator {
       const pattern = asString(input.pattern);
       if (pattern) {
         const searchPath = asString(input.path) ?? '';
-        const key = `${event.tool}|${pattern}|${identityKey(searchPath)}`;
+        const key = `${event.tool}|${pattern}|${identityKey(searchPath)}|${asString(input.include) ?? ''}`;
         const record = this.searches.get(key) ?? {
           tool: event.tool,
           pattern,
@@ -594,8 +593,9 @@ function readSessionWithDb(
 ): OpenCodeSessionSummary {
   const acc = new SessionAccumulator();
   acc.seedTimes(session.startedAt, session.endedAt);
-  if (detected.hasV1) absorbV1Session(db, session.id, acc);
+  // During migration both tables can contain the same session; v2 is canonical.
   if (detected.hasV2) absorbV2Session(db, session.id, detected, acc);
+  else absorbV1Session(db, session.id, acc);
   return acc.summary({ sessionId: session.id, project: session.project, database: databasePath, bytes, schema: detected.schema });
 }
 
@@ -606,17 +606,19 @@ function readSessionWithDb(
 // ---------------------------------------------------------------------------
 
 export async function listOpenCodeSessions(databasePath: string): Promise<OpenCodeSessionInfo[]> {
-  const { db, close } = await openReadOnly(databasePath);
+  const { db, close, verify } = await openReadOnly(databasePath);
   try {
     const detected = detectSchema(db, databasePath);
     const bytes = statSync(databasePath).size;
-    return listSessionRows(db, detected).map((session) => ({
+    const sessions = listSessionRows(db, detected).map((session) => ({
       sessionId: session.id,
       project: session.project,
       database: databasePath,
       bytes,
       schema: detected.schema,
     }));
+    verify();
+    return sessions;
   } catch (error) {
     if (error instanceof DataError) throw error;
     throw new DataError(`OpenCode database at ${databasePath} could not be read (${sqliteCode(error)}); its sessions are excluded as unknown.`);
@@ -626,13 +628,15 @@ export async function listOpenCodeSessions(databasePath: string): Promise<OpenCo
 }
 
 export async function readOpenCodeSession(databasePath: string, sessionId: string): Promise<OpenCodeSessionSummary> {
-  const { db, close } = await openReadOnly(databasePath);
+  const { db, close, verify } = await openReadOnly(databasePath);
   try {
     const detected = detectSchema(db, databasePath);
     const session = listSessionRows(db, detected).find((row) => row.id === sessionId);
     if (!session) throw new DataError(`No OpenCode session "${sessionId}" found in ${databasePath}.`);
     const bytes = statSync(databasePath).size;
-    return readSessionWithDb(db, detected, databasePath, bytes, session);
+    const summary = readSessionWithDb(db, detected, databasePath, bytes, session);
+    verify();
+    return summary;
   } catch (error) {
     if (error instanceof DataError) throw error;
     throw new DataError(`OpenCode session "${sessionId}" in ${databasePath} could not be read (${sqliteCode(error)}); it is excluded as unknown.`);
@@ -647,6 +651,8 @@ export interface OpenCodeDatabaseSummary {
   schema: OpenCodeSchema;
   sessions: OpenCodeSessionSummary[];
   bounds: {
+    projectsListed: number;
+    projectsScanned: number;
     sessionsListed: number;
     sessionsScanned: number;
     sessionsSkipped: number;
@@ -659,26 +665,39 @@ export interface OpenCodeDatabaseSummary {
 }
 
 export const OPENCODE_LIMITATIONS: string[] = [
-  'Read-only: this reader opens the OpenCode database read-only (immutable, or a private temp copy when URI read-only is unavailable), installs nothing and changes nothing; no database, journal, WAL or SHM file is created next to the source.',
+  'Read-only: this reader uses SQLite immutable read-only mode only when no journal/WAL sidecar exists; when a live sidecar is present, sessions are excluded as unknown rather than risking a stale or torn read. Source files are never copied or changed.',
   'OpenCode storage is not a documented stable API; a host version change can change table or JSON shapes, and unknown shapes degrade to fewer observations instead of a false report.',
-  'Only opencode.db (or an explicit OPENCODE_DB override) is read. Release-channel databases (opencode-<channel>.db), the frozen pre-SQLite flat-file layout, and any data still only in an uncheckpointed WAL are not read; sessions visible only there are unavailable, never zero.',
+  'Only opencode.db (or an explicit OPENCODE_DB override) is read. Release-channel databases (opencode-<channel>.db) and the frozen pre-SQLite flat-file layout are not read.',
   'Token counts are provider-reported per assistant message, summed verbatim. They say nothing measured about subscription quota or cost, and this reader never converts them into either; it does not even select cost columns. In v1, upstream overwrites a multi-step message\'s tokens on each step-finish, so output/reasoning for multi-step messages can be undercounted; v2 compaction-message tokens are excluded from assistant usage.',
   'Reports contain file paths, search patterns, tool names, sizes and truncated output fingerprints - never file, output or raw command content. Redaction of incidental secrets in those text fields is best-effort and not a guarantee.',
   'Reads and searches are counted within one session only, so cross-session reuse is never claimed.',
 ];
 
-export async function readOpenCodeDatabase(databasePath: string): Promise<OpenCodeDatabaseSummary> {
-  const { db, close } = await openReadOnly(databasePath);
+export async function readOpenCodeDatabase(databasePath: string, options: { project?: string; maxSessions?: number } = {}): Promise<OpenCodeDatabaseSummary> {
+  const { db, close, verify } = await openReadOnly(databasePath);
   try {
     const detected = detectSchema(db, databasePath);
     const bytes = statSync(databasePath).size;
-    const listed = listSessionRows(db, detected);
+    const allListed = listSessionRows(db, detected);
+    let projects = [...new Set(allListed.map((session) => session.project))];
+    if (options.project) {
+      const wanted = projectKey(options.project);
+      const exact = projects.filter((project) => projectKey(project) === wanted);
+      projects = exact.length ? exact : projects.filter((project) => projectKey(project).endsWith(`/${wanted.replace(/^\/+/, '')}`));
+      if (projects.length > 1) throw new DataError(`Project "${options.project}" is ambiguous: it matches ${projects.join(', ')}. Pass the full project directory.`);
+      if (!projects.length) throw new DataError(`No OpenCode project directory matches "${options.project}". Available project directories: ${[...new Set(allListed.map((session) => session.project))].join(', ') || 'none'}`);
+    }
+    const selectedProjects = new Set(projects);
+    const listed = allListed.filter((session) => selectedProjects.has(session.project));
+    const ordered = [...listed].sort((a, b) => (b.endedAt ?? b.startedAt ?? '').localeCompare(a.endedAt ?? a.startedAt ?? '') || a.id.localeCompare(b.id));
+    const maxSessions = options.maxSessions ?? Number.POSITIVE_INFINITY;
+    const selected = ordered.slice(0, maxSessions);
     const sessions: OpenCodeSessionSummary[] = [];
     const skipped: { session: string; reason: string }[] = [];
     let messages = 0;
     let parts = 0;
     let malformedRows = 0;
-    for (const session of listed) {
+    for (const session of selected) {
       try {
         const summary = readSessionWithDb(db, detected, databasePath, bytes, session);
         sessions.push(summary);
@@ -691,14 +710,16 @@ export async function readOpenCodeDatabase(databasePath: string): Promise<OpenCo
       }
     }
     const limitations = [...OPENCODE_LIMITATIONS];
+    if (listed.length > selected.length) limitations.push(`${listed.length - selected.length} matching session(s) beyond the ${maxSessions}-session cap were not read.`);
     if (skipped.length) limitations.push(`${skipped.length} session(s) could not be read and are excluded as unknown: ${skipped.map((entry) => `${entry.session} (${entry.reason})`).join('; ')}`);
     if (malformedRows) limitations.push(`${malformedRows} message/part row(s) were unparseable and skipped; this commonly includes rows being written while the database was read.`);
+    verify();
     return {
       database: databasePath,
       bytes,
       schema: detected.schema,
       sessions,
-      bounds: { sessionsListed: listed.length, sessionsScanned: sessions.length, sessionsSkipped: skipped.length, messages, parts, malformedRows },
+      bounds: { projectsListed: new Set(allListed.map((session) => session.project)).size, projectsScanned: new Set(selected.map((session) => session.project)).size, sessionsListed: listed.length, sessionsScanned: sessions.length, sessionsSkipped: skipped.length + listed.length - selected.length, messages, parts, malformedRows },
       skipped,
       limitations,
     };

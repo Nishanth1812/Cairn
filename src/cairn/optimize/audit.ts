@@ -4,7 +4,7 @@
 // its limitations instead of being smoothed over. The audit aggregates observations,
 // separates provider-reported usage from estimates, ranks only observed opportunities and
 // never infers subscription quota, dollars, or unobserved categories.
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { ClaudeTranscript, emptyObservations, listClaudeProjects, claudeProjectsRoot, type ProjectListing } from './claudeTranscript.js';
 import { CodexTranscript, listCodexProjects, codexProjectsRoot } from './codexTranscript.js';
@@ -28,6 +28,7 @@ export interface AuditBounds {
 }
 
 export interface UsageModelTotals { sessions: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; reasoningTokens?: number }
+interface UsageRecord { id: string; usage: UsageTotals; usageByModel?: Record<string, UsageTotals> }
 
 export interface ReadRow { project: string; session: string; path: string; reads: number; identicalRepeats: number; versions: number; firstTimestamp?: string; lastTimestamp?: string }
 
@@ -55,7 +56,7 @@ export interface AuditReport {
   overhead: { elapsedMs: number };
 }
 
-export interface AuditOptions { home: string; project?: string; maxSessions?: number; host?: AuditHost }
+export interface AuditOptions { home: string; project?: string; maxSessions?: number; host?: AuditHost; recent?: boolean }
 
 const MAX_ROWS = 10;
 const estimate = (chars: number): number => Math.round(chars / 4 * 1.1);
@@ -70,12 +71,35 @@ function selectProjects<T extends { project: string }>(all: T[], project: string
   if (unknownIsBucket && project.toLowerCase() === 'unknown') {
     throw new DataError(`Project "unknown" is not a real ${hostLabel} project; it is the fallback for sessions whose project could not be read. Pass the full project directory to audit one project.`);
   }
-  const wanted = project.toLowerCase();
-  const exact = all.filter((listing) => listing.project.toLowerCase() === wanted);
-  const candidates = exact.length ? exact : all.filter((listing) => listing.project.toLowerCase().endsWith(wanted));
+  const wanted = projectPathKey(project);
+  const claudeEncoded = hostLabel === 'Claude Code' && (project.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(project) || project.includes('\\'))
+    ? project.replace(/\\/g, '/').replace(/[:/]/g, '-')
+    : undefined;
+  const encodedExact = claudeEncoded === undefined ? [] : all.filter((listing) =>
+    /^[a-zA-Z]:[\\/]/.test(project) || project.includes('\\')
+      ? listing.project.toLowerCase() === claudeEncoded.toLowerCase()
+      : listing.project === claudeEncoded);
+  const exact = encodedExact.length ? encodedExact : all.filter((listing) => projectPathKey(listing.project) === wanted);
+  const candidates = exact.length ? exact : all.filter((listing) => projectPathKey(listing.project).endsWith(`/${wanted.replace(/^\/+/, '')}`));
   if (!candidates.length) throw new DataError(`No ${hostLabel} project directory matches "${project}". Available project directories: ${all.map((listing) => listing.project).join(', ')}`);
   if (candidates.length > 1) throw new DataError(`Project "${project}" is ambiguous: it matches ${candidates.map((listing) => listing.project).join(', ')}. Ask for the full project directory name.`);
   return candidates;
+}
+
+function projectPathKey(path: string): string {
+  if (/^[a-zA-Z]:(?:[\\/]|$)/.test(path) || path.startsWith('\\\\') || path.includes('\\')) return identityKey(path);
+  const absolute = path.startsWith('/');
+  const parts: string[] = [];
+  for (const part of path.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..' && parts.length && parts[parts.length - 1] !== '..') parts.pop();
+    else if (part !== '..' || !absolute) parts.push(part);
+  }
+  return `${absolute ? '/' : ''}${parts.join('/')}`;
+}
+
+function fileMtime(path: string): number {
+  try { return statSync(path).mtimeMs; } catch { return Number.NEGATIVE_INFINITY; }
 }
 
 // What the aggregation needs from any host's per-session summary. Hosts differ only in how
@@ -85,12 +109,16 @@ interface NormalizedSession {
   sessionId: string;
   usage: UsageTotals | null;
   usageByModel: Record<string, UsageTotals>;
+  usageRecords?: UsageRecord[];
   toolResultChars: number;
   reads: ReadObservation[];
   searches: SearchObservation[];
   largeOutputs: LargeOutputObservation[];
   largeOutputCount: number;
   largeOutputChars: number;
+  messages?: number;
+  parts?: number;
+  malformedRows?: number;
 }
 
 interface BuildInput {
@@ -104,11 +132,45 @@ interface BuildInput {
   home: string;
 }
 
+const zeroUsage = (): UsageTotals => ({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 });
+function addUsageTotals(a: UsageTotals, b: UsageTotals): UsageTotals {
+  const result: UsageTotals = { inputTokens: a.inputTokens + b.inputTokens, outputTokens: a.outputTokens + b.outputTokens, cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens, cacheCreationTokens: a.cacheCreationTokens + b.cacheCreationTokens };
+  if (a.reasoningTokens !== undefined || b.reasoningTokens !== undefined) result.reasoningTokens = (a.reasoningTokens ?? 0) + (b.reasoningTokens ?? 0);
+  return result;
+}
+function subtractUsageTotals(a: UsageTotals, b: UsageTotals): UsageTotals {
+  const result: UsageTotals = { inputTokens: Math.max(0, a.inputTokens - b.inputTokens), outputTokens: Math.max(0, a.outputTokens - b.outputTokens), cacheReadTokens: Math.max(0, a.cacheReadTokens - b.cacheReadTokens), cacheCreationTokens: Math.max(0, a.cacheCreationTokens - b.cacheCreationTokens) };
+  if (a.reasoningTokens !== undefined || b.reasoningTokens !== undefined) result.reasoningTokens = Math.max(0, (a.reasoningTokens ?? 0) - (b.reasoningTokens ?? 0));
+  return result;
+}
+function hasUsage(usage: UsageTotals): boolean {
+  return usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheCreationTokens + (usage.reasoningTokens ?? 0) > 0;
+}
+function addUsageToAggregate(target: UsageTotals, usage: UsageTotals): void {
+  target.inputTokens += usage.inputTokens;
+  target.outputTokens += usage.outputTokens;
+  target.cacheReadTokens += usage.cacheReadTokens;
+  target.cacheCreationTokens += usage.cacheCreationTokens;
+  if (usage.reasoningTokens !== undefined) target.reasoningTokens = (target.reasoningTokens ?? 0) + usage.reasoningTokens;
+}
+function addModelUsage(totals: Map<string, UsageModelTotals>, model: string, usage: UsageTotals, countSession = true): void {
+  const total = totals.get(model) ?? { sessions: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+  if (countSession) total.sessions++;
+  total.inputTokens += usage.inputTokens;
+  total.outputTokens += usage.outputTokens;
+  total.cacheReadTokens += usage.cacheReadTokens;
+  total.cacheCreationTokens += usage.cacheCreationTokens;
+  if (usage.reasoningTokens !== undefined) total.reasoningTokens = (total.reasoningTokens ?? 0) + usage.reasoningTokens;
+  totals.set(model, total);
+}
+
 function buildReport(input: BuildInput): AuditReport {
   const aggregated = emptyObservations();
   const modelTotals = new Map<string, UsageModelTotals>();
   const reads = new Map<string, ReadRow>();
   const searches = new Map<string, SearchRow>();
+  const usageRecordValues = new Map<string, Set<string>>();
+  const conflictingUsageIds = new Set<string>();
   const largeSamples: { tool: string; target: string; chars: number }[] = [];
   let sessionsWithProviderUsage = 0;
   let sessionsWithoutProviderUsage = 0;
@@ -117,26 +179,37 @@ function buildReport(input: BuildInput): AuditReport {
   for (const summary of input.sessions) {
     if (summary.usage) {
       sessionsWithProviderUsage++;
-      aggregated.usage.inputTokens += summary.usage.inputTokens;
-      aggregated.usage.outputTokens += summary.usage.outputTokens;
-      aggregated.usage.cacheReadTokens += summary.usage.cacheReadTokens;
-      aggregated.usage.cacheCreationTokens += summary.usage.cacheCreationTokens;
-      if (summary.usage.reasoningTokens !== undefined) aggregated.usage.reasoningTokens = (aggregated.usage.reasoningTokens ?? 0) + summary.usage.reasoningTokens;
+      const records = summary.usageRecords ?? [];
+      const keyedUsage = records.reduce((total, record) => addUsageTotals(total, record.usage), zeroUsage());
+      const remainder = subtractUsageTotals(summary.usage, keyedUsage);
+      addUsageToAggregate(aggregated.usage, remainder);
+      const modelSessionKeys = new Set<string>();
+      for (const [model, usage] of Object.entries(summary.usageByModel)) {
+        const keyed = records.reduce((total, record) => addUsageTotals(total, record.usageByModel?.[model] ?? zeroUsage()), zeroUsage());
+        const unkeyed = subtractUsageTotals(usage, keyed);
+        addModelUsage(modelTotals, model, unkeyed, false);
+        if (hasUsage(unkeyed)) modelSessionKeys.add(model);
+      }
+      for (const record of records) {
+        const value = JSON.stringify([record.usage, record.usageByModel ?? {}]);
+        const key = `${input.host}|${record.id}`;
+        const previous = usageRecordValues.get(key);
+        if (previous?.has(value)) continue;
+        if (previous) { conflictingUsageIds.add(key); previous.add(value); }
+        else usageRecordValues.set(key, new Set([value]));
+        addUsageToAggregate(aggregated.usage, record.usage);
+        for (const [model, usage] of Object.entries(record.usageByModel ?? {})) {
+          addModelUsage(modelTotals, model, usage, false);
+          modelSessionKeys.add(model);
+        }
+      }
+      for (const model of modelSessionKeys) (modelTotals.get(model) as UsageModelTotals).sessions++;
     } else {
       // No provider-reported usage in a session means the token side is only estimable there.
       sessionsWithoutProviderUsage++;
       estimatedTokensWithoutUsage += estimate(summary.toolResultChars);
     }
-    for (const [model, usage] of Object.entries(summary.usageByModel)) {
-      const totals = modelTotals.get(model) ?? { sessions: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
-      totals.sessions++;
-      totals.inputTokens += usage.inputTokens;
-      totals.outputTokens += usage.outputTokens;
-      totals.cacheReadTokens += usage.cacheReadTokens;
-      totals.cacheCreationTokens += usage.cacheCreationTokens;
-      if (usage.reasoningTokens !== undefined) totals.reasoningTokens = (totals.reasoningTokens ?? 0) + usage.reasoningTokens;
-      modelTotals.set(model, totals);
-    }
+    if (!summary.usage) for (const [model, usage] of Object.entries(summary.usageByModel)) addModelUsage(modelTotals, model, usage);
     // Per-session rows, keyed so sessions stay isolated (cross-session reuse is not serviceable).
     for (const read of summary.reads) {
       const key = `${summary.project}|${summary.sessionId}|${identityKey(read.path)}`;
@@ -175,6 +248,7 @@ function buildReport(input: BuildInput): AuditReport {
       notes: [
         input.usageNote,
         'Cache reads and cache creation are reported separately and never merged.',
+        ...(conflictingUsageIds.size ? [`${conflictingUsageIds.size} repeated request identity/identities carried different usage snapshots; both were retained because neither can be assumed final.`] : []),
       ],
     },
     opportunities: {
@@ -204,10 +278,12 @@ async function runClaudeAudit(options: AuditOptions, maxSessions: number, starte
   const sessions: NormalizedSession[] = [];
   const readFailures: { session: string; reason: string }[] = [];
 
-  const queued = listings.flatMap((listing) => listing.sessions.map((session) => ({ project: listing.project, ...session })));
+  const queued = listings.flatMap((listing) => listing.sessions.map((session) => ({ project: listing.project, ...session, recentTime: options.recent ? fileMtime(session.file) : undefined })));
   // Largest first when the session cap is hit: the sessions most likely to hold complete
   // multi-file work are the audited ones. The cap and any skipped sessions are always reported.
-  queued.sort((a, b) => (b.bytes ?? 0) - (a.bytes ?? 0));
+  queued.sort(options.recent
+    ? (a, b) => (b.recentTime as number) - (a.recentTime as number) || a.file.localeCompare(b.file)
+    : (a, b) => (b.bytes ?? 0) - (a.bytes ?? 0));
   for (const entry of queued) {
     if (bounds.sessionsScanned >= maxSessions) { bounds.sessionsSkipped++; continue; }
     const transcript = new ClaudeTranscript(entry.sessionId, entry.file, entry.project, entry.bytes ?? 0);
@@ -229,11 +305,13 @@ async function runClaudeAudit(options: AuditOptions, maxSessions: number, starte
     'Read-only: this run opened host files for reading only, installed nothing and changed nothing.',
     'Claude Code transcript layout is undocumented; counts can be incomplete when sessions are truncated, rotated, or being written concurrently, and a host version change can change what is observable. The per-session subdirectories holding agent transcripts are also an undocumented detail.',
     'Provider token counts are API accounting recorded per assistant message. They say nothing measured about subscription quota or cost, and this report never converts them into either.',
+    'Repeated provider requests are deduplicated only when message and request identity are both available and totals match; anonymous usage remains summed per file, and conflicting snapshots are retained and flagged.',
     'Token estimates use the project estimator (chars/4 x 1.1), not a model tokenizer.',
     'Reports contain file paths, search patterns, sizes and truncated content fingerprints - never file or output content. Redaction of incidental secrets in those text fields is best-effort and not a guarantee.',
     'Reads and searches are counted within one session only, so cross-session reuse is never claimed.',
     'Reinstate nothing: this audit does not deduplicate, compact or rewrite anything and installs no hooks.',
   ];
+  if (options.recent) limitations.push('Recent-first selection uses transcript file modification time as an estimate, not a host session timestamp; ties use file path order.');
   if (readFailures.length > 0) limitations.push(`${readFailures.length} session file(s) could not be read and are excluded as unknown: ${readFailures.map((entry) => `${entry.session} (${entry.reason})`).join('; ')}`);
   if (bounds.malformedLines > 0) limitations.push(`${bounds.malformedLines} transcript line(s) were unparseable and skipped; this commonly includes lines being written while the file was read.`);
   const withoutUsage = sessions.filter((session) => !session.usage).length;
@@ -268,8 +346,10 @@ async function runCodexAudit(options: AuditOptions, maxSessions: number, started
   const sessions: NormalizedSession[] = [];
   const readFailures: { session: string; reason: string }[] = [];
 
-  const queued = listings.flatMap((listing) => listing.sessions.map((session) => ({ project: listing.project, ...session })));
-  queued.sort((a, b) => (b.bytes ?? 0) - (a.bytes ?? 0));
+  const queued = listings.flatMap((listing) => listing.sessions.map((session) => ({ project: listing.project, ...session, recentTime: options.recent ? fileMtime(session.file) : undefined })));
+  queued.sort(options.recent
+    ? (a, b) => (b.recentTime as number) - (a.recentTime as number) || a.file.localeCompare(b.file)
+    : (a, b) => (b.bytes ?? 0) - (a.bytes ?? 0));
   for (const entry of queued) {
     if (bounds.sessionsScanned >= maxSessions) { bounds.sessionsSkipped++; continue; }
     const transcript = new CodexTranscript(entry.sessionId, entry.file, entry.project, entry.bytes ?? 0);
@@ -298,6 +378,7 @@ async function runCodexAudit(options: AuditOptions, maxSessions: number, started
     'Sessions are counted within one rollout only, so cross-session reuse is never claimed.',
     'Reinstate nothing: this audit does not deduplicate, compact or rewrite anything and installs no hooks.',
   ];
+  if (options.recent) limitations.push('Recent-first selection uses rollout file modification time as an estimate, not a host session timestamp; ties use file path order.');
   if (readFailures.length > 0) limitations.push(`${readFailures.length} session file(s) could not be read and are excluded as unknown: ${readFailures.map((entry) => `${entry.session} (${entry.reason})`).join('; ')}`);
   if (bounds.malformedLines > 0) limitations.push(`${bounds.malformedLines} rollout line(s) were unparseable and skipped; this commonly includes lines being written while the file was read.`);
   const withoutUsage = sessions.filter((session) => !session.usage).length;
@@ -318,24 +399,16 @@ async function runCodexAudit(options: AuditOptions, maxSessions: number, started
 
 async function runOpenCodeAudit(options: AuditOptions, maxSessions: number, started: number): Promise<AuditReport> {
   const database = opencodeDatabasePath({ home: options.home });
-  const summary = await readOpenCodeDatabase(database);
+  const summary = await readOpenCodeDatabase(database, { project: options.project, maxSessions });
   if (!summary.bounds.sessionsListed) throw new DataError(`No OpenCode sessions found in ${database}. Either OpenCode has not run here, or its database lives somewhere else (XDG_DATA_HOME / OPENCODE_DB).`);
-  const listings: ProjectListing[] = [...new Set(summary.sessions.map((session) => session.project))].map((project) => ({ project, sessions: [] }));
-  const selected = selectProjects(listings, options.project, 'OpenCode', true);
-  const selectedProjects = new Set(selected.map((listing) => listing.project));
-
-  const candidates = summary.sessions.filter((session) => selectedProjects.has(session.project));
-  // Most recent first when the session cap is hit, so the audited slice is the sessions the
-  // user most likely cares about. The cap and any skipped sessions are always reported.
-  const sorted = [...candidates].sort((a, b) => (b.endedAt ?? b.startedAt ?? '').localeCompare(a.endedAt ?? a.startedAt ?? '') || a.sessionId.localeCompare(b.sessionId));
-  const capped = sorted.slice(0, maxSessions);
-  const capSkipped = sorted.length - capped.length;
-
-  const sessions: NormalizedSession[] = capped.map((session: OpenCodeSessionSummary) => ({
+  const sessions: NormalizedSession[] = summary.sessions.map((session: OpenCodeSessionSummary) => ({
     project: session.project,
     sessionId: session.sessionId,
     usage: session.usage,
     usageByModel: session.usageByModel,
+    messages: session.messages,
+    parts: session.parts,
+    malformedRows: session.malformedRows,
     toolResultChars: session.toolResultChars,
     reads: session.reads,
     searches: session.searches,
@@ -344,20 +417,20 @@ async function runOpenCodeAudit(options: AuditOptions, maxSessions: number, star
     largeOutputChars: session.largeOutputChars,
   }));
   const bounds: AuditBounds = {
-    projectsPresent: listings.length,
-    projectsScanned: selected.length,
-    sessionsScanned: capped.length,
-    sessionsSkipped: summary.bounds.sessionsSkipped + capSkipped,
-    bytesRead: capped.length ? summary.bytes : 0,
-    linesRead: capped.reduce((total, session) => total + session.messages + session.parts, 0),
-    malformedLines: capped.reduce((total, session) => total + session.malformedRows, 0),
+    projectsPresent: summary.bounds.projectsListed,
+    projectsScanned: summary.bounds.projectsScanned,
+    sessionsScanned: sessions.length,
+    sessionsSkipped: summary.bounds.sessionsSkipped,
+    bytesRead: sessions.length ? summary.bytes : 0,
+    linesRead: sessions.reduce((total, session) => total + (session.messages ?? 0) + (session.parts ?? 0), 0),
+    malformedLines: sessions.reduce((total, session) => total + (session.malformedRows ?? 0), 0),
   };
 
   const limitations = [...summary.limitations];
   if (bounds.malformedLines > 0) limitations.push(`${bounds.malformedLines} message/part row(s) were unparseable and skipped; this commonly includes rows being written while the database was read.`);
   const withoutUsage = sessions.filter((session) => !session.usage).length;
   if (withoutUsage > 0) limitations.push(`${withoutUsage} of ${sessions.length} audited sessions carry no provider-reported usage; their token side is only estimated (from observed tool-result sizes; assistant commentary is not measurable).`);
-  if (capSkipped > 0) limitations.push(`${capSkipped} session(s) beyond the ${maxSessions}-session cap were not scanned; rerun with --project to focus scope instead of inferring from partial data.`);
+  if (summary.bounds.sessionsSkipped > summary.skipped.length) limitations.push(`${summary.bounds.sessionsSkipped - summary.skipped.length} matching session(s) beyond the ${maxSessions}-session cap were not scanned; rerun with --project to focus scope instead of inferring from partial data.`);
 
   return buildReport({
     host: 'opencode',
