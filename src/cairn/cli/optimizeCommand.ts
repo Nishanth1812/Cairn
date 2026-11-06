@@ -87,6 +87,10 @@ function summaryText(report: Awaited<ReturnType<typeof runAudit>>): string {
     for (const row of report.opportunities.repeatedSearches.slice(0, 5)) lines.push(`  ${row.project} :: ${row.tool} "${row.pattern}" — ${row.calls} identical calls`);
   }
   lines.push('Coverage and limits: run `cairn optimize coverage`; full limitation list in --json.');
+  if (report.byProject?.length) {
+    lines.push('By project (reads / identical re-reads / large outputs):');
+    for (const project of report.byProject.slice(0, 5)) lines.push(`  ${project.project} — ${project.sessions} session(s), ${project.repeatedReads} reads (${project.identicalReReads} identical), ${project.largeOutputs} large output(s)`);
+  }
   return lines.join('\n');
 }
 

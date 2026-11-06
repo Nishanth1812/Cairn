@@ -51,6 +51,7 @@ export interface AuditReport {
     repeatedSearches: SearchRow[];
     largeToolOutputs: { count: number; chars: number; estimatedTokens: number; samples: { tool: string; target: string; chars: number }[] };
   };
+  byProject: Array<{ project: string; sessions: number; repeatedReads: number; identicalReReads: number; repeatedSearches: number; largeOutputs: number; largeChars: number }>;
   coverage: { id: AuditHost; label: string; reader: 'implemented' | 'not implemented'; categories: Record<string, { coverage: string; detail: string }> };
   limitations: string[];
   overhead: { elapsedMs: number };
@@ -176,6 +177,13 @@ function buildReport(input: BuildInput): AuditReport {
   const usageRecordValues = new Map<string, Set<string>>();
   const conflictingUsageIds = new Set<string>();
   const largeSamples: { tool: string; target: string; chars: number }[] = [];
+  // Per-project rollup: users act per repo, so findings are grouped by project.
+  const projectTotals = new Map<string, { project: string; sessions: number; repeatedReads: number; identicalReReads: number; repeatedSearches: number; largeOutputs: number; largeChars: number }>();
+  const projectTally = (name: string): { project: string; sessions: number; repeatedReads: number; identicalReReads: number; repeatedSearches: number; largeOutputs: number; largeChars: number } => {
+    let tally = projectTotals.get(name);
+    if (!tally) { tally = { project: name, sessions: 0, repeatedReads: 0, identicalReReads: 0, repeatedSearches: 0, largeOutputs: 0, largeChars: 0 }; projectTotals.set(name, tally); }
+    return tally;
+  };
   let sessionsWithProviderUsage = 0;
   let sessionsWithoutProviderUsage = 0;
   let estimatedTokensWithoutUsage = 0;
@@ -215,6 +223,8 @@ function buildReport(input: BuildInput): AuditReport {
       estimatedTokensWithoutUsage += estimate(summary.toolResultChars);
     }
     if (!summary.usage) for (const [model, usage] of Object.entries(summary.usageByModel)) addModelUsage(modelTotals, model, usage);
+    const tally = projectTally(summary.project);
+    tally.sessions++;
     // Per-session rows, keyed so sessions stay isolated (cross-session reuse is not serviceable).
     for (const read of summary.reads) {
       const key = `${summary.project}|${summary.sessionId}|${identityKey(read.path)}`;
@@ -225,6 +235,8 @@ function buildReport(input: BuildInput): AuditReport {
       row.readChars = (row.readChars ?? 0) + (read.readChars ?? 0);
       if (read.lastTimestamp) row.lastTimestamp = read.lastTimestamp;
       reads.set(key, row);
+      tally.repeatedReads += read.reads;
+      tally.identicalReReads += read.identicalRepeats;
     }
     for (const search of summary.searches) {
       // The identity includes the filters: the same pattern under a different glob/type/include
@@ -233,9 +245,12 @@ function buildReport(input: BuildInput): AuditReport {
       const row = searches.get(key) ?? { project: summary.project, session: summary.sessionId, tool: search.tool, pattern: search.pattern, searchPath: search.searchPath, calls: 0, ...(search.glob ? { glob: search.glob } : {}), ...(search.type ? { type: search.type } : {}), ...(search.include ? { include: search.include } : {}) };
       row.calls += search.calls;
       searches.set(key, row);
+      tally.repeatedSearches += search.calls;
     }
     aggregated.largeOutputCount += summary.largeOutputCount;
     aggregated.largeOutputChars += summary.largeOutputChars;
+    tally.largeOutputs += summary.largeOutputCount;
+    tally.largeChars += summary.largeOutputChars;
     for (const sample of summary.largeOutputs.slice(0, 2)) largeSamples.push({ tool: sample.tool, target: clipTarget(sample.target), chars: sample.chars });
   }
 
@@ -267,6 +282,7 @@ function buildReport(input: BuildInput): AuditReport {
         samples: largeSamples.sort((a, b) => b.chars - a.chars).slice(0, MAX_ROWS),
       },
     },
+    byProject: [...projectTotals.values()].sort((a, b) => b.largeChars + b.identicalReReads - (a.largeChars + a.identicalReReads)),
     coverage: { id: inventory.id, label: inventory.label, reader: inventory.reader, categories: inventory.categories },
     limitations: input.limitations,
     overhead: { elapsedMs: Math.round((performance.now() - input.started) * 10) / 10 },
