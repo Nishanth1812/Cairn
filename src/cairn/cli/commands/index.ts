@@ -84,11 +84,18 @@ function requireCount(value: string | undefined, label: string, fallback: number
   if (!Number.isSafeInteger(number) || number < 1) fail(`${label} must be a positive integer`, 2);
   return number;
 }
+// Registration stores the realpath of the git root, so lookups must canonicalize the
+// same way: Windows runners report cwds under 8.3 short names (RUNNER~1\...), which
+// would never string-match the long path stored at register time.
+function canonicalize(path: string): string {
+  try { return realpathSync(path); } catch { return path; }
+}
 // The enclosing git checkout, so a command run from a subfolder finds its repo; falls back to the folder itself.
 function gitRootOf(dir: string): string {
-  for (let current = resolve(dir); ; current = resolve(current, '..')) {
+  const start = canonicalize(resolve(dir));
+  for (let current = start; ; current = resolve(current, '..')) {
     if (existsSync(join(current, '.git'))) return current;
-    if (resolve(current, '..') === current) return resolve(dir);
+    if (resolve(current, '..') === current) return start;
   }
 }
 function repoRow(db: Database.Database, query?: string): { id: string; root_path: string; display_name: string } {
