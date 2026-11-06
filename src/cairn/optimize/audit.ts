@@ -3,10 +3,12 @@
 // and never infers subscription quota, dollars, or unobserved categories.
 import { existsSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
-import { ClaudeTranscript, clipTarget, emptyObservations, listClaudeProjects, claudeProjectsRoot } from './claudeTranscript.js';
+import { ClaudeTranscript, emptyObservations, listClaudeProjects, claudeProjectsRoot, type ProjectListing } from './claudeTranscript.js';
+import { clipTarget, identityKey, type SearchObservation } from './observations.js';
+import { DataError } from './errors.js';
 import { hostCoverage } from './hosts.js';
 
-export class DataError extends Error {}
+export { DataError } from './errors.js';
 
 export interface AuditBounds {
   projectsPresent: number;
@@ -22,7 +24,7 @@ export interface UsageModelTotals { sessions: number; inputTokens: number; outpu
 
 export interface ReadRow { project: string; session: string; path: string; reads: number; identicalRepeats: number; versions: number; firstTimestamp?: string; lastTimestamp?: string }
 
-export interface SearchRow { project: string; session: string; tool: string; pattern: string; searchPath: string; calls: number }
+export interface SearchRow { project: string; session: string; tool: string; pattern: string; searchPath: string; calls: number; glob?: string; type?: string; include?: string }
 
 export interface AuditReport {
   host: 'claude-code';
@@ -51,6 +53,19 @@ export interface AuditOptions { home: string; project?: string; maxSessions?: nu
 const MAX_ROWS = 10;
 const estimate = (chars: number): number => Math.round(chars / 4 * 1.1);
 
+// Narrows a project listing to the one project a hint names, or the whole listing without a
+// hint. Exact matches win; otherwise the hint must be a suffix of exactly one project name.
+// Several matches are ambiguous and fail closed instead of widening the scan.
+function selectProjects(all: ProjectListing[], project: string | undefined, hostLabel: string): ProjectListing[] {
+  if (!project) return all;
+  const wanted = project.toLowerCase();
+  const exact = all.filter((listing) => listing.project.toLowerCase() === wanted);
+  const candidates = exact.length ? exact : all.filter((listing) => listing.project.toLowerCase().endsWith(wanted));
+  if (!candidates.length) throw new DataError(`No ${hostLabel} project directory matches "${project}". Available project directories: ${all.map((listing) => listing.project).join(', ')}`);
+  if (candidates.length > 1) throw new DataError(`Project "${project}" is ambiguous: it matches ${candidates.map((listing) => listing.project).join(', ')}. Ask for the full project directory name.`);
+  return candidates;
+}
+
 export async function runAudit(options: AuditOptions): Promise<AuditReport> {
   const started = performance.now();
   const maxSessions = options.maxSessions ?? 500;
@@ -58,14 +73,10 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
   if (!existsSync(root)) throw new DataError(`No Claude Code local data found at ${root}. Either Claude Code has not run here, or its session data lives somewhere else.`);
   const all = await listClaudeProjects(options.home);
   if (!all.length) throw new DataError(`No Claude Code project transcripts found under ${root}. Either Claude Code has not run here, or its session data lives somewhere else.`);
-  let listings = all;
-  if (options.project) {
-    const wanted = options.project.toLowerCase();
-    // A hint may be the encoded directory name or any unique suffix of it (e.g. "demoA").
-    const match = all.filter((listing) => listing.project.toLowerCase() === wanted || listing.project.toLowerCase().endsWith(wanted));
-    if (!match.length) throw new DataError(`No Claude Code project directory matches "${options.project}". Available project directories: ${all.map((listing) => listing.project).join(', ')}`);
-    listings = match;
-  }
+  // A hint narrows the scan only when it names one project: an exact name wins, and a unique
+  // suffix (e.g. "demoA") is accepted. A hint that matches several projects is an error rather
+  // than a wider scan, so a typo can never silently audit more than asked.
+  const listings = selectProjects(all, options.project, 'Claude Code');
 
   const bounds: AuditBounds = { projectsPresent: all.length, projectsScanned: listings.length, sessionsScanned: 0, sessionsSkipped: 0, bytesRead: 0, linesRead: 0, malformedLines: 0 };
   const aggregated = emptyObservations();
@@ -119,7 +130,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
     }
     // Per-session rows, keyed so sessions stay isolated (cross-session reuse is not serviceable).
     for (const read of summary.reads) {
-      const key = `${entry.project}|${entry.sessionId}|${read.path.toLowerCase()}`;
+      const key = `${entry.project}|${entry.sessionId}|${identityKey(read.path)}`;
       const row = reads.get(key) ?? { project: entry.project, session: entry.sessionId, path: read.path, reads: 0, identicalRepeats: 0, versions: 0, firstTimestamp: read.firstTimestamp, lastTimestamp: read.lastTimestamp };
       row.reads += read.reads;
       row.identicalRepeats += read.identicalRepeats;
@@ -128,8 +139,10 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       reads.set(key, row);
     }
     for (const search of summary.searches) {
-      const key = `${entry.project}|${entry.sessionId}|${search.tool}|${search.pattern}|${search.searchPath.toLowerCase()}`;
-      const row = searches.get(key) ?? { project: entry.project, session: entry.sessionId, tool: search.tool, pattern: search.pattern, searchPath: search.searchPath, calls: 0 };
+      // The identity includes the filters: the same pattern under a different glob/type/include
+      // is a different search, not a repeat of the same one.
+      const key = `${entry.project}|${entry.sessionId}|${search.tool}|${search.pattern}|${identityKey(search.searchPath)}|${search.glob ?? ''}|${search.type ?? ''}|${search.include ?? ''}`;
+      const row = searches.get(key) ?? { project: entry.project, session: entry.sessionId, tool: search.tool, pattern: search.pattern, searchPath: search.searchPath, calls: 0, ...(search.glob ? { glob: search.glob } : {}), ...(search.type ? { type: search.type } : {}), ...(search.include ? { include: search.include } : {}) };
       row.calls += search.calls;
       searches.set(key, row);
     }

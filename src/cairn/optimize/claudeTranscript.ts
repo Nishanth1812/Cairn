@@ -2,14 +2,9 @@
 // It parses only the fields the audit reports on; file content and tool output are measured
 // (lengths, truncated hashes) and never retained or emitted. Unknown shapes are skipped and
 // counted, so a host version change degrades to fewer observations instead of a false report.
-import { createHash } from 'node:crypto';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-
-// Results at or above this size are counted as large tool outputs. A constant keeps the audit
-// comparable across runs; it is deliberately not user-configurable.
-export const LARGE_OUTPUT_CHARS = 20_000;
-const TARGET_PREVIEW_CHARS = 80;
+import { fingerprint, identityKey, safeCommandLabel, LARGE_OUTPUT_CHARS, type LargeOutputObservation, type ReadObservation, type SearchObservation, type UsageTotals } from './observations.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -17,65 +12,10 @@ const isObject = (value: unknown): value is JsonObject => typeof value === 'obje
 const asString = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined;
 const asCount = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
-const fingerprint = (text: string): string | null => /^\s*$/.test(text) ? null : createHash('sha1').update(text).digest('hex').slice(0, 12);
-
-// Windows paths are case-insensitive, so one file read as both cases is one file. Separator form
-// (\\ or /) never means a different file either.
-function identityKey(path: string): string {
-  const slash = path.replace(/\\/g, '/');
-  return process.platform === 'win32' ? slash.toLowerCase() : slash;
-}
-
-export interface ReadObservation {
-  path: string;
-  reads: number;
-  versions: number;
-  identicalRepeats: number;
-  firstTimestamp?: string;
-  lastTimestamp?: string;
-}
-
-export interface SearchObservation {
-  tool: string;
-  pattern: string;
-  searchPath: string;
-  calls: number;
-}
-
-export interface LargeOutputObservation {
-  tool: string;
-  target: string;
-  chars: number;
-  fingerprint: string | null;
-}
-
-export interface UsageTotals {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-}
-export interface Observations {
-  sessions: number;
-  usage: UsageTotals;
-  toolResultChars: number;
-  repeatedReads: ReadObservation[];
-  repeatedSearches: SearchObservation[];
-  largeOutputCount: number;
-  largeOutputChars: number;
-  largeOutputs: LargeOutputObservation[];
-}
-
-export const emptyObservations = (): Observations => ({
-  sessions: 0,
-  usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
-  toolResultChars: 0,
-  repeatedReads: [],
-  repeatedSearches: [],
-  largeOutputCount: 0,
-  largeOutputChars: 0,
-  largeOutputs: [],
-});
+// Shared shapes live in observations.ts so every host reports the same observation kinds.
+// They stay re-exported here for the existing import sites (audit, tests, tooling).
+export { clipTarget, emptyObservations, LARGE_OUTPUT_CHARS, fingerprint, identityKey } from './observations.js';
+export type { LargeOutputObservation, ReadObservation, SearchObservation, UsageTotals } from './observations.js';
 
 export interface SessionSummary {
   sessionId: string;
@@ -112,6 +52,8 @@ interface DanglingTool {
   command?: string;
   pattern?: string;
   searchPath?: string;
+  glob?: string;
+  type?: string;
 }
 
 export class ClaudeTranscript {
@@ -131,6 +73,8 @@ export class ClaudeTranscript {
   private startedAt?: string;
   private endedAt?: string;
   private readonly usageByModel = new Map<string, UsageTotals>();
+  // One entry per counted API response, keyed by message/request identity (see absorbAssistant).
+  private readonly usageEntries = new Map<string, { model: string; totals: UsageTotals; hasStop: boolean }>();
 
   constructor(readonly sessionId: string, readonly file: string, readonly project: string, readonly bytes: number) {}
 
@@ -151,23 +95,55 @@ export class ClaudeTranscript {
     if (timestamp) { this.startedAt ??= timestamp; this.endedAt = timestamp; }
     const message = isObject(entry.message) ? entry.message : undefined;
     if (!message) return;
-    if (entry.type === 'assistant') this.absorbAssistant(timestamp, message);
+    if (entry.type === 'assistant') this.absorbAssistant(timestamp, entry, message);
     else if (entry.type === 'user') this.absorbUser(timestamp, message);
   }
 
-  private absorbAssistant(timestamp: string | undefined, message: JsonObject): void {
+  private addUsage(model: string, totals: UsageTotals, sign: 1 | -1): void {
+    this.usage ??= { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+    const modelUsage = this.usageByModel.get(model) ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+    for (const target of [this.usage, modelUsage]) {
+      target.inputTokens += sign * totals.inputTokens;
+      target.outputTokens += sign * totals.outputTokens;
+      target.cacheReadTokens += sign * totals.cacheReadTokens;
+      target.cacheCreationTokens += sign * totals.cacheCreationTokens;
+    }
+    this.usageByModel.set(model, modelUsage);
+  }
+
+  private absorbAssistant(timestamp: string | undefined, entry: JsonObject, message: JsonObject): void {
     const usage = isObject(message.usage) ? message.usage : undefined;
     if (usage) {
-      this.usage ??= { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+      const totals: UsageTotals = {
+        inputTokens: asCount(usage.input_tokens) ?? 0,
+        outputTokens: asCount(usage.output_tokens) ?? 0,
+        cacheReadTokens: asCount(usage.cache_read_input_tokens) ?? 0,
+        cacheCreationTokens: asCount(usage.cache_creation_input_tokens) ?? 0,
+      };
       const model = asString(message.model) ?? 'unknown';
-      const modelUsage = this.usageByModel.get(model) ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
-      for (const totals of [this.usage, modelUsage]) {
-        totals.inputTokens += asCount(usage.input_tokens) ?? 0;
-        totals.outputTokens += asCount(usage.output_tokens) ?? 0;
-        totals.cacheReadTokens += asCount(usage.cache_read_input_tokens) ?? 0;
-        totals.cacheCreationTokens += asCount(usage.cache_creation_input_tokens) ?? 0;
+      // One API response can be written as several transcript lines sharing a message.id (and a
+      // requestId), each carrying that response's full usage. Summing lines would count it once
+      // per line, so count each message+request identity once. A repeated identity is a later,
+      // cumulative snapshot of the same response, so it replaces the earlier one (a snapshot
+      // already carrying stop_reason is the final one and is not overwritten by a later
+      // non-final duplicate). The same message.id under a different requestId is a separate
+      // request and is counted separately; entries with no identity cannot be told apart and
+      // each is counted, never merged. Tool observations below run on every line regardless, so
+      // a usage duplicate never discards the tool calls its lines carry.
+      const messageId = asString(message.id);
+      const requestId = asString(entry.requestId);
+      const key = messageId && requestId ? `msg:${messageId}|req:${requestId}` : messageId ? `msg:${messageId}` : requestId ? `req:${requestId}` : undefined;
+      if (!key) this.addUsage(model, totals, 1);
+      else {
+        const hasStop = asString(message.stop_reason) !== undefined;
+        const prior = this.usageEntries.get(key);
+        if (prior && prior.hasStop && !hasStop) { /* keep the final stop_reason snapshot */ }
+        else {
+          if (prior) this.addUsage(prior.model, prior.totals, -1);
+          this.usageEntries.set(key, { model, totals, hasStop });
+          this.addUsage(model, totals, 1);
+        }
       }
-      this.usageByModel.set(model, modelUsage);
     }
     const content = Array.isArray(message.content) ? message.content : [];
     for (const item of content) {
@@ -179,7 +155,9 @@ export class ClaudeTranscript {
         file: asString(input.file_path),
         command: asString(input.command),
         pattern: asString(input.pattern),
-        searchPath: asString(input.path) });
+        searchPath: asString(input.path),
+        glob: asString(input.glob),
+        type: asString(input.type) });
     }
     if (timestamp) this.startedAt ??= timestamp;
   }
@@ -199,7 +177,9 @@ export class ClaudeTranscript {
         this.largeOutputs.push({ tool: pending.tool, ...describeTarget(pending), chars: text.length, fingerprint: fingerprint(text) });
       }
       if (typeof item.tool_use_id !== 'string') continue;
-      if (pending.file && !mark) {
+      // Only Read loads a file; Write/Edit and friends name a file_path too but never read it, so
+      // counting every file-bearing tool would report writes and edits as repeated reads.
+      if (pending.file && !mark && pending.tool.toLowerCase() === 'read') {
         const key = identityKey(pending.file);
         const record = this.reads.get(key) ?? { path: pending.file, reads: 0, versions: 0, identicalRepeats: 0, firstTimestamp: timestamp, lastTimestamp: timestamp, labels: new Map() };
         const hash = fingerprint(text);
@@ -209,9 +189,13 @@ export class ClaudeTranscript {
         if (timestamp) record.lastTimestamp = timestamp;
         this.reads.set(key, record);
       }
-      if (pending.pattern) {
-        const key = `${pending.tool}|${pending.pattern}|${identityKey(pending.searchPath ?? '')}`;
-        const record = this.searches.get(key) ?? { tool: pending.tool, pattern: pending.pattern, searchPath: pending.searchPath ?? '', calls: 0 };
+      // Only Grep (content search) and Glob (path search) are searches. Their identity is the
+      // pattern plus the normalized search path plus the Grep glob/type filters when present:
+      // the same pattern under a different filter is a different search, not a repeat of it.
+      const searchTool = pending.tool.toLowerCase();
+      if (pending.pattern && (searchTool === 'grep' || searchTool === 'glob')) {
+        const key = `${pending.tool}|${pending.pattern}|${identityKey(pending.searchPath ?? '')}|${pending.glob ?? ''}|${pending.type ?? ''}`;
+        const record = this.searches.get(key) ?? { tool: pending.tool, pattern: pending.pattern, searchPath: pending.searchPath ?? '', calls: 0, ...(pending.glob ? { glob: pending.glob } : {}), ...(pending.type ? { type: pending.type } : {}) };
         record.calls++;
         this.searches.set(key, record);
       }
@@ -247,15 +231,16 @@ export class ClaudeTranscript {
   }
 }
 
+// Large-output targets are surfaced in the audit, so a shell command is reported by its
+// executable name only (see safeCommandLabel): arguments are dropped entirely because they
+// can hold credentials, and pattern-matching redaction cannot recognize every secret shape.
+// File paths and search patterns are reported as-is; the CLI redacts them best-effort on the
+// way out, which is a best effort, not a guarantee.
 function describeTarget(pending: DanglingTool): { target: string } {
   if (pending.file) return { target: identityKey(pending.file) };
-  if (pending.command) return { target: pending.command };
+  if (pending.command) return { target: safeCommandLabel(pending.command) };
   if (pending.pattern) return { target: `pattern ${pending.pattern}` };
   return { target: pending.tool };
-}
-
-export function clipTarget(target: string): string {
-  return target.length > TARGET_PREVIEW_CHARS ? `${target.slice(0, TARGET_PREVIEW_CHARS - 1)}…` : target;
 }
 
 export interface ProjectListing { project: string; sessions: { sessionId: string; file: string; bytes: number | null }[] }

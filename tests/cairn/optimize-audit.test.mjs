@@ -196,7 +196,7 @@ test('audit reports observed opportunities with evidence, keeps estimates separa
     assert.equal(big.count, 1);
     assert.equal(big.chars, 25000);
     assert.equal(big.samples[0].tool, 'Bash');
-    assert.equal(big.samples[0].target, 'npm test');
+    assert.equal(big.samples[0].target, 'npm'); // executable only, never the raw command
     assert.equal(big.samples[0].chars, 25000);
     assert.ok(big.estimatedTokens > 0);
 
