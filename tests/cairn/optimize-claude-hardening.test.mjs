@@ -72,13 +72,31 @@ function hardeningLines() {
     // --- large outputs: a shell command carrying a password canary, and an ordinary command ---
     JSON.stringify(assistant('2026-11-01T10:03:00Z', 'claude-test-model', null, [
       use('b1', 'Bash', { command: `PASSWORD=${CANARY} npm test` }),
+      use('b1', 'Bash', { command: `PASSWORD=${CANARY} leaked duplicate invocation` }),
       use('b2', 'Bash', { command: 'npm run build' }),
     ])),
+    // Invalid usage must remain unknown; a blank successful read is not evidence of reuse.
+    JSON.stringify(identifiedAssistant('2026-11-01T10:05:00Z', 'bad_count', 'req_bad',
+      { input_tokens: -1, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, [])),
+    JSON.stringify(identifiedAssistant('2026-11-01T10:05:01Z', 'missing_required', 'req_missing',
+      { output_tokens: 7, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, [])),
+    // Anthropic documents cache token fields as optional; an omitted cache field means no cache use.
+    JSON.stringify(identifiedAssistant('2026-11-01T10:05:02Z', 'no_cache', 'req_no_cache',
+      { input_tokens: 4, output_tokens: 2 }, [])),
+    JSON.stringify(assistant('2026-11-01T10:06:00Z', 'claude-test-model', null,
+      [use('u_blank', 'Read', { file_path: `C:\\repos\\demo\\token=${CANARY}.txt` }),
+        use('u_secret1', 'Read', { file_path: `C:\\repos\\demo\\token=${CANARY}.txt` }),
+        use('u_secret2', 'Read', { file_path: `C:\\repos\\demo\\token=${CANARY}.txt` }),
+        use('g_secret1', 'Grep', { pattern: `token=${CANARY}`, path: `C:\\repos\\demo\\token=${CANARY}` }),
+        use('g_secret2', 'Grep', { pattern: `token=${CANARY}`, path: `C:\\repos\\demo\\token=${CANARY}` })])),
     JSON.stringify(userLine('2026-11-01T10:04:00Z', [
       result('u_read1', APP_TEXT), result('u_read2', APP_TEXT), result('u_read3', APP_TEXT),
       result('u_edit1', 'edited once'), result('u_edit2', 'edited twice'), result('u_write1', 'written'),
       result('g1', 'a.ts'), result('g2', 'a.ts'), result('g3', 'a.js'), result('s1', 'match'),
       result('b1', 'x'.repeat(25000)), result('b2', 'y'.repeat(26000)),
+      result('b1', 'duplicate output must not be counted'), result('u_blank', '   '), result('u_blank', 'duplicate blank result'),
+      result('u_secret1', 'synthetic secret path file'), result('u_secret2', 'synthetic secret path file'),
+      result('g_secret1', 'synthetic secret pattern match'), result('g_secret2', 'synthetic secret pattern match'),
     ])),
   ].join('\n');
 }
@@ -104,9 +122,10 @@ test('counts each message+request usage identity once, keeps the cumulative fina
   try {
     const report = audit(home);
     // msg_dup/req_1 final snapshot (100/50/1000/100) + msg_dup/req_9 (10/1/10/10)
-    // + msg_other/req_2 (200/20/2000/200) + two anonymous lines (5/5/5/5 each).
+    // + msg_other/req_2 (200/20/2000/200) + two anonymous lines (5/5/5/5 each)
+    // + one response without cache usage (4/2/0/0).
     assert.deepEqual(report.usage.byModel['claude-test-model'],
-      { sessions: 1, inputTokens: 320, outputTokens: 81, cacheReadTokens: 3020, cacheCreationTokens: 320 });
+      { sessions: 1, inputTokens: 324, outputTokens: 83, cacheReadTokens: 3020, cacheCreationTokens: 320 });
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -145,5 +164,31 @@ test('reports shell commands by executable only, dropping arguments that could h
     // labeled by executable only; arguments never reach the report.
     assert.deepEqual(big.samples.map((sample) => sample.target), ['npm', 'npm']);
     for (const sample of big.samples) assert.ok(!sample.target.includes(CANARY));
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('deduplicates tool IDs and results, ignores blank reads and invalid usage, and redacts secret-bearing paths', () => {
+  const home = writeHome();
+  try {
+    const report = audit(home);
+    assert.equal(report.usage.byModel['claude-test-model'].outputTokens, 83);
+    assert.equal(report.opportunities.largeToolOutputs.chars, 51_000);
+    assert.equal(report.opportunities.largeToolOutputs.count, 2);
+    assert.ok(!report.opportunities.repeatedReads.some((row) => row.path.includes('token=')));
+    assert.ok(report.opportunities.repeatedReads.some((row) => row.path.includes('[REDACTED_SECRET:generic-credential]')));
+    assert.ok(report.opportunities.repeatedSearches.some((row) => row.pattern.includes('[REDACTED_SECRET:generic-credential]')));
+    assert.ok(!JSON.stringify(report).includes(CANARY));
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('does not sum the same reliably identified usage record found in another transcript file', () => {
+  const home = writeHome();
+  try {
+    const project = join(home, '.claude', 'projects', 'H--Personal-Projects-hardening');
+    writeFileSync(join(project, 'duplicate.jsonl'), JSON.stringify(identifiedAssistant('2026-11-01T10:00:01Z', 'msg_dup', 'req_1',
+      { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 1000, cache_creation_input_tokens: 100 })), 'utf8');
+    const report = audit(home);
+    assert.deepEqual(report.usage.byModel['claude-test-model'],
+      { sessions: 2, inputTokens: 324, outputTokens: 83, cacheReadTokens: 3020, cacheCreationTokens: 320 });
   } finally { rmSync(home, { recursive: true, force: true }); }
 });

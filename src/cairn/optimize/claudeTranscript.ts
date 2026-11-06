@@ -2,15 +2,26 @@
 // It parses only the fields the audit reports on; file content and tool output are measured
 // (lengths, truncated hashes) and never retained or emitted. Unknown shapes are skipped and
 // counted, so a host version change degrades to fewer observations instead of a false report.
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { fingerprint, identityKey, safeCommandLabel, LARGE_OUTPUT_CHARS, type LargeOutputObservation, type ReadObservation, type SearchObservation, type UsageTotals } from './observations.js';
+import { fingerprint, identityKey, redactAndClip, safeCommandLabel, LARGE_OUTPUT_CHARS, type LargeOutputObservation, type ReadObservation, type SearchObservation, type UsageTotals } from './observations.js';
 
 type JsonObject = Record<string, unknown>;
 
 const isObject = (value: unknown): value is JsonObject => typeof value === 'object' && value !== null && !Array.isArray(value);
 const asString = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined;
-const asCount = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+const asCount = (value: unknown): number | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+const MAX_LINE_CHARS = 64 * 1024 * 1024;
+const parseUsage = (usage: JsonObject): UsageTotals | undefined => {
+  const inputTokens = asCount(usage.input_tokens);
+  const outputTokens = asCount(usage.output_tokens);
+  const cacheReadTokens = usage.cache_read_input_tokens === undefined ? 0 : asCount(usage.cache_read_input_tokens);
+  const cacheCreationTokens = usage.cache_creation_input_tokens === undefined ? 0 : asCount(usage.cache_creation_input_tokens);
+  if (inputTokens === undefined || outputTokens === undefined || cacheReadTokens === undefined || cacheCreationTokens === undefined) return undefined;
+  return { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens };
+};
 
 // Shared shapes live in observations.ts so every host reports the same observation kinds.
 // They stay re-exported here for the existing import sites (audit, tests, tooling).
@@ -26,6 +37,7 @@ export interface SessionSummary {
   endedAt?: string;
   usage: UsageTotals | null;
   usageByModel: Record<string, UsageTotals>;
+  usageRecords?: { id: string; usage: UsageTotals; usageByModel: Record<string, UsageTotals> }[];
   lines: number;
   malformedLines: number;
   toolCalls: number;
@@ -74,25 +86,53 @@ export class ClaudeTranscript {
   private endedAt?: string;
   private readonly usageByModel = new Map<string, UsageTotals>();
   // One entry per counted API response, keyed by message/request identity (see absorbAssistant).
-  private readonly usageEntries = new Map<string, { model: string; totals: UsageTotals; hasStop: boolean }>();
+  private readonly usageEntries = new Map<string, { model: string; totals: UsageTotals; hasStop: boolean; identity?: [string, string] }>();
+  private readonly toolUses = new Set<string>();
+  private readonly toolResults = new Set<string>();
 
   constructor(readonly sessionId: string, readonly file: string, readonly project: string, readonly bytes: number) {}
 
   async read(): Promise<void> {
-    const raw = await readFile(this.file, 'utf8'); // read errors propagate: the audit reports them, it never retry-writes
-    for (const line of `${raw}\n`.split(/\r?\n/)) {
-      const text = line.trim();
-      if (!text) continue;
-      this.lines++;
-      let entry: unknown;
-      try { entry = JSON.parse(text); } catch { this.malformedLines++; continue; } // truncated or corrupted lines are tolerated per line
-      this.absorb(isObject(entry) ? entry : {});
+    const stream = createReadStream(this.file, { encoding: 'utf8' });
+    let rest = '';
+    let oversized = false;
+    try {
+      for await (const chunk of stream) {
+        let remaining = rest + chunk;
+        let end: number;
+        while ((end = remaining.indexOf('\n')) >= 0) {
+          const line = remaining.slice(0, end).replace(/\r$/, '');
+          if (oversized || line.length > MAX_LINE_CHARS) { this.lines++; this.malformedLines++; }
+          else this.absorbLine(line);
+          oversized = false;
+          remaining = remaining.slice(end + 1);
+        }
+        if (oversized || remaining.length > MAX_LINE_CHARS) { oversized = true; rest = ''; }
+        else rest = remaining;
+      }
+      if (oversized) { this.lines++; this.malformedLines++; }
+      else if (rest) this.absorbLine(rest.replace(/\r$/, ''));
+    } finally {
+      stream.destroy();
     }
+  }
+
+  private absorbLine(line: string): void {
+    const text = line.trim();
+    if (!text) return;
+    this.lines++;
+    let entry: unknown;
+    try { entry = JSON.parse(text); } catch { this.malformedLines++; return; }
+    this.absorb(isObject(entry) ? entry : {});
   }
 
   private absorb(entry: JsonObject): void {
     const timestamp = asString(entry.timestamp);
-    if (timestamp) { this.startedAt ??= timestamp; this.endedAt = timestamp; }
+    const time = timestamp ? Date.parse(timestamp) : NaN;
+    if (Number.isFinite(time)) {
+      if (!this.startedAt || time < Date.parse(this.startedAt)) this.startedAt = timestamp;
+      if (!this.endedAt || time > Date.parse(this.endedAt)) this.endedAt = timestamp;
+    }
     const message = isObject(entry.message) ? entry.message : undefined;
     if (!message) return;
     if (entry.type === 'assistant') this.absorbAssistant(timestamp, entry, message);
@@ -113,13 +153,8 @@ export class ClaudeTranscript {
 
   private absorbAssistant(timestamp: string | undefined, entry: JsonObject, message: JsonObject): void {
     const usage = isObject(message.usage) ? message.usage : undefined;
-    if (usage) {
-      const totals: UsageTotals = {
-        inputTokens: asCount(usage.input_tokens) ?? 0,
-        outputTokens: asCount(usage.output_tokens) ?? 0,
-        cacheReadTokens: asCount(usage.cache_read_input_tokens) ?? 0,
-        cacheCreationTokens: asCount(usage.cache_creation_input_tokens) ?? 0,
-      };
+    const totals = usage ? parseUsage(usage) : undefined;
+    if (totals) {
       const model = asString(message.model) ?? 'unknown';
       // One API response can be written as several transcript lines sharing a message.id (and a
       // requestId), each carrying that response's full usage. Summing lines would count it once
@@ -132,7 +167,7 @@ export class ClaudeTranscript {
       // a usage duplicate never discards the tool calls its lines carry.
       const messageId = asString(message.id);
       const requestId = asString(entry.requestId);
-      const key = messageId && requestId ? `msg:${messageId}|req:${requestId}` : messageId ? `msg:${messageId}` : requestId ? `req:${requestId}` : undefined;
+      const key = messageId && requestId ? JSON.stringify([messageId, requestId]) : messageId ? JSON.stringify([messageId]) : requestId ? JSON.stringify([requestId]) : undefined;
       if (!key) this.addUsage(model, totals, 1);
       else {
         const hasStop = asString(message.stop_reason) !== undefined;
@@ -140,7 +175,7 @@ export class ClaudeTranscript {
         if (prior && prior.hasStop && !hasStop) { /* keep the final stop_reason snapshot */ }
         else {
           if (prior) this.addUsage(prior.model, prior.totals, -1);
-          this.usageEntries.set(key, { model, totals, hasStop });
+          this.usageEntries.set(key, { model, totals, hasStop, ...(messageId && requestId ? { identity: [messageId, requestId] } : {}) });
           this.addUsage(model, totals, 1);
         }
       }
@@ -148,40 +183,45 @@ export class ClaudeTranscript {
     const content = Array.isArray(message.content) ? message.content : [];
     for (const item of content) {
       if (!isObject(item) || item.type !== 'tool_use') continue;
-      this.toolCalls++;
       const input = isObject(item.input) ? item.input : {};
       const tool = asString(item.name) ?? 'unknown';
-      if (asString(item.id)) this.pending.set(String(item.id), { tool,
+      const toolId = asString(item.id);
+      if (toolId && this.toolUses.has(toolId)) continue;
+      if (toolId) { this.toolUses.add(toolId); this.toolCalls++; this.pending.set(toolId, { tool,
         file: asString(input.file_path),
         command: asString(input.command),
         pattern: asString(input.pattern),
         searchPath: asString(input.path),
         glob: asString(input.glob),
-        type: asString(input.type) });
+        type: asString(input.type) }); }
+      else this.toolCalls++;
     }
-    if (timestamp) this.startedAt ??= timestamp;
   }
 
   private absorbUser(timestamp: string | undefined, message: JsonObject): void {
     const content = Array.isArray(message.content) ? message.content : [];
     for (const item of content) {
       if (!isObject(item) || item.type !== 'tool_result') continue;
+      const toolUseId = asString(item.tool_use_id);
+      if (toolUseId && this.toolResults.has(toolUseId)) continue;
+      if (toolUseId) this.toolResults.add(toolUseId);
       const text = collectText(item.content);
       this.toolResultChars += text.length;
-      const pending = item.tool_use_id === undefined ? undefined : this.pending.get(String(item.tool_use_id));
+      const pending = toolUseId === undefined ? undefined : this.pending.get(toolUseId);
       if (!pending) continue;
+      if (toolUseId) this.pending.delete(toolUseId);
       const mark = item.is_error === true;
       if (text.length >= LARGE_OUTPUT_CHARS) {
         this.largeOutputCount++;
         this.largeOutputChars += text.length;
         this.largeOutputs.push({ tool: pending.tool, ...describeTarget(pending), chars: text.length, fingerprint: fingerprint(text) });
       }
-      if (typeof item.tool_use_id !== 'string') continue;
+      if (!toolUseId) continue;
       // Only Read loads a file; Write/Edit and friends name a file_path too but never read it, so
       // counting every file-bearing tool would report writes and edits as repeated reads.
-      if (pending.file && !mark && pending.tool.toLowerCase() === 'read') {
+      if (pending.file && !mark && text.trim() && pending.tool.toLowerCase() === 'read') {
         const key = identityKey(pending.file);
-        const record = this.reads.get(key) ?? { path: pending.file, reads: 0, versions: 0, identicalRepeats: 0, firstTimestamp: timestamp, lastTimestamp: timestamp, labels: new Map() };
+        const record = this.reads.get(key) ?? { path: redactAndClip(pending.file), reads: 0, versions: 0, identicalRepeats: 0, firstTimestamp: timestamp, lastTimestamp: timestamp, labels: new Map() };
         const hash = fingerprint(text);
         if (hash && !record.labels.has(hash)) { record.labels.set(hash, hash); record.versions++; }
         else if (hash) record.identicalRepeats++;
@@ -194,8 +234,12 @@ export class ClaudeTranscript {
       // the same pattern under a different filter is a different search, not a repeat of it.
       const searchTool = pending.tool.toLowerCase();
       if (pending.pattern && (searchTool === 'grep' || searchTool === 'glob')) {
-        const key = `${pending.tool}|${pending.pattern}|${identityKey(pending.searchPath ?? '')}|${pending.glob ?? ''}|${pending.type ?? ''}`;
-        const record = this.searches.get(key) ?? { tool: pending.tool, pattern: pending.pattern, searchPath: pending.searchPath ?? '', calls: 0, ...(pending.glob ? { glob: pending.glob } : {}), ...(pending.type ? { type: pending.type } : {}) };
+        const pattern = redactAndClip(pending.pattern);
+        const searchPath = redactAndClip(pending.searchPath ?? '');
+        const glob = pending.glob ? redactAndClip(pending.glob) : undefined;
+        const type = pending.type ? redactAndClip(pending.type) : undefined;
+        const key = createHash('sha256').update(JSON.stringify([pending.tool, pending.pattern, identityKey(pending.searchPath ?? ''), pending.glob ?? '', pending.type ?? ''])).digest('hex');
+        const record = this.searches.get(key) ?? { tool: pending.tool, pattern, searchPath, calls: 0, ...(glob ? { glob } : {}), ...(type ? { type } : {}) };
         record.calls++;
         this.searches.set(key, record);
       }
@@ -218,6 +262,7 @@ export class ClaudeTranscript {
       endedAt: this.endedAt,
       usage: this.usage ? { ...this.usage } : null,
       usageByModel: Object.fromEntries(this.usageByModel),
+      ...([...this.usageEntries.values()].some((entry) => entry.identity) ? { usageRecords: [...this.usageEntries.values()].flatMap((entry) => entry.identity ? [{ id: createHash('sha256').update(JSON.stringify(entry.identity)).digest('hex'), usage: { ...entry.totals }, usageByModel: { [entry.model]: { ...entry.totals } } }] : []) } : {}),
       lines: this.lines,
       malformedLines: this.malformedLines,
       toolCalls: this.toolCalls,
@@ -234,12 +279,12 @@ export class ClaudeTranscript {
 // Large-output targets are surfaced in the audit, so a shell command is reported by its
 // executable name only (see safeCommandLabel): arguments are dropped entirely because they
 // can hold credentials, and pattern-matching redaction cannot recognize every secret shape.
-// File paths and search patterns are reported as-is; the CLI redacts them best-effort on the
-// way out, which is a best effort, not a guarantee.
+// Paths and patterns are redacted before they enter observations; the secret scanner remains
+// best-effort, but raw targets never leave this reader.
 function describeTarget(pending: DanglingTool): { target: string } {
-  if (pending.file) return { target: identityKey(pending.file) };
+  if (pending.file) return { target: redactAndClip(identityKey(pending.file)) };
   if (pending.command) return { target: safeCommandLabel(pending.command) };
-  if (pending.pattern) return { target: `pattern ${pending.pattern}` };
+  if (pending.pattern) return { target: `pattern ${redactAndClip(pending.pattern)}` };
   return { target: pending.tool };
 }
 
