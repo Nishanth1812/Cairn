@@ -80,7 +80,11 @@ function selectProjects<T extends { project: string }>(all: T[], project: string
       ? listing.project.toLowerCase() === claudeEncoded.toLowerCase()
       : listing.project === claudeEncoded);
   const exact = encodedExact.length ? encodedExact : all.filter((listing) => projectPathKey(listing.project) === wanted);
-  const candidates = exact.length ? exact : all.filter((listing) => projectPathKey(listing.project).endsWith(`/${wanted.replace(/^\/+/, '')}`));
+  const candidates = exact.length ? exact : all.filter((listing) => {
+    const path = projectPathKey(listing.project);
+    return path.endsWith(`/${wanted.replace(/^\/+/, '')}`) ||
+      (hostLabel === 'Claude Code' && !/[\\/]/.test(project) && listing.project.toLowerCase().endsWith(`-${project.toLowerCase()}`));
+  });
   if (!candidates.length) throw new DataError(`No ${hostLabel} project directory matches "${project}". Available project directories: ${all.map((listing) => listing.project).join(', ')}`);
   if (candidates.length > 1) throw new DataError(`Project "${project}" is ambiguous: it matches ${candidates.map((listing) => listing.project).join(', ')}. Ask for the full project directory name.`);
   return candidates;
@@ -185,6 +189,7 @@ function buildReport(input: BuildInput): AuditReport {
       addUsageToAggregate(aggregated.usage, remainder);
       const modelSessionKeys = new Set<string>();
       for (const [model, usage] of Object.entries(summary.usageByModel)) {
+        modelSessionKeys.add(model);
         const keyed = records.reduce((total, record) => addUsageTotals(total, record.usageByModel?.[model] ?? zeroUsage()), zeroUsage());
         const unkeyed = subtractUsageTotals(usage, keyed);
         addModelUsage(modelTotals, model, unkeyed, false);

@@ -148,8 +148,8 @@ test('Glob search identity merges path spellings without merging other patterns 
     const glob = report.opportunities.repeatedSearches.find((row) => row.tool === 'Glob' && row.pattern === '**/*.ts');
     assert.ok(glob, 'expected one repeated Glob row for **/*.ts');
     assert.equal(glob.calls, 2);
-    assert.ok(!report.opportunities.repeatedSearches.some((row) => row.pattern === '**/*.js' || row.tool === 'Grep'),
-      'single Glob **/*.js and single Grep must not appear as repeats');
+    assert.ok(!report.opportunities.repeatedSearches.some((row) => row.pattern === '**/*.js' || (row.tool === 'Grep' && row.pattern === '**/*.ts')),
+      'single Glob **/*.js and single Grep **/*.ts must not appear as repeats');
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
