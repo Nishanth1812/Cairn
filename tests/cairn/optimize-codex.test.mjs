@@ -101,6 +101,19 @@ test('token_count is cumulative: the latest snapshot wins, deltas are not summed
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
+test('session timestamps use the chronological bounds when rollout records arrive out of order', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'cairn-codex-time-'));
+  try {
+    const { summary } = await summarize(home, `2026/11/01/rollout-2026-11-01T10-00-00-${SESSION_A}.jsonl`, [
+      JSON.stringify({ timestamp: '2026-11-01T11:00:00.000Z', type: 'unknown' }),
+      JSON.stringify({ timestamp: '2026-11-01T09:00:00.000Z', type: 'unknown' }),
+      JSON.stringify({ timestamp: '2026-11-01T10:00:00.000Z', type: 'unknown' }),
+    ]);
+    assert.equal(summary.startedAt, '2026-11-01T09:00:00.000Z');
+    assert.equal(summary.endedAt, '2026-11-01T11:00:00.000Z');
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
 test('token_usage_record cumulative is used once, and a compaction context-window fill is not provider usage', async () => {
   const home = mkdtempSync(join(tmpdir(), 'cairn-codex-'));
   try {

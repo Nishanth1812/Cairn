@@ -269,7 +269,8 @@ export class CodexTranscript {
 
   private absorb(entry: JsonObject): void {
     const timestamp = asString(entry.timestamp);
-    if (timestamp) { this.startedAt ??= timestamp; this.endedAt = timestamp; }
+    if (timestamp && (!this.startedAt || timestamp < this.startedAt)) this.startedAt = timestamp;
+    if (timestamp && (!this.endedAt || timestamp > this.endedAt)) this.endedAt = timestamp;
     const payload = isObject(entry.payload) ? entry.payload : undefined;
     if (!payload) return;
     switch (entry.type) {

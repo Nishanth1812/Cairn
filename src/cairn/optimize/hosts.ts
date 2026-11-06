@@ -7,6 +7,7 @@
 // does not fabricate it.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { codexHome } from './codexTranscript.js';
 
 export type HostId = 'claude-code' | 'codex' | 'opencode';
 export type CoverageStatus = 'observable' | 'estimated' | 'unavailable';
@@ -29,7 +30,7 @@ function claudeInstalled(home: string): boolean {
   return existsSync(join(home, '.claude', 'projects')) || existsSync(join(home, '.claude', 'settings.json'));
 }
 function codexInstalled(home: string): boolean {
-  return existsSync(join(home, '.codex'));
+  return existsSync(codexHome(home));
 }
 function opencodeInstalled(home: string): boolean {
   return existsSync(join(home, '.config', 'opencode')) || existsSync(join(home, '.local', 'share', 'opencode'));
@@ -61,7 +62,7 @@ export function hostCoverage(home: string): HostInventory[] {
       label: 'Codex',
       appType: 'local CLI writing sessions on this machine',
       orchestration: 'local session logs; usage limits are cloud-side and not exposed locally by this reader',
-      dataRoot: join(home, '.codex'),
+      dataRoot: codexHome(home),
       installed: codexInstalled(home),
       detection: 'checks for ~/.codex (CODEX_HOME overrides the data root)',
       reader: 'implemented',
