@@ -1,6 +1,9 @@
 // Reader for local OpenCode session data in its current SQLite format. Read-only: the database
 // is opened with better-sqlite3 in read-only, immutable mode (see openReadOnly) so opening it
-// never creates the database or any journal/WAL/SHM sidecar next to it. Only the fields the
+// never creates the database or any journal/WAL/SHM sidecar next to it. When a live
+// journal/WAL sidecar is present, the database and its sidecars are first copied to a private
+// temporary snapshot directory and the snapshot is opened instead; the source is never read
+// directly, checkpointed, written or deleted. Only the fields the
 // audit reports on are selected; message text, tool output and raw command strings are measured
 // (lengths, truncated hashes) and never retained or emitted. Cost, quota and subscription data
 // are never read or inferred. Unknown or incompatible shapes degrade to a DataError, and
@@ -34,8 +37,8 @@
 // The pre-SQLite flat-file layout (storage/session|message|part JSON files) is intentionally
 // not read: it is frozen at migration time and has no verified reader here, so sessions that
 // exist only there are reported as unavailable, never as zero.
-import { existsSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { copyFileSync, existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type Database from 'better-sqlite3';
@@ -115,16 +118,41 @@ export function opencodeDatabasePath(options: OpenCodePathOptions = {}): string 
 }
 
 // ---------------------------------------------------------------------------
-// Read-only opening. Primary path: a file: URI with mode=ro&immutable=1, which
-// reads the main file only when no journal sidecars exist. Immutable mode avoids
-// source locks and sidecar creation; live WAL/rollback-journal state is reported unknown.
+// Read-only opening. Without sidecars, a file: URI with mode=ro&immutable=1
+// reads the main file directly. With a live sidecar, the database and any
+// existing sidecars are copied to a private temporary snapshot directory
+// (never next to the source) and the snapshot is opened read-only instead:
+// the live file is never read, checkpointed, written or deleted, and a
+// snapshot that cannot be taken or opened fails honestly rather than
+// reporting stale data as fresh. In both paths immutable mode reads only
+// the main file, so data still only in an uncheckpointed WAL is invisible.
 // ---------------------------------------------------------------------------
+
+const SIDECAR_SUFFIXES = ['-wal', '-shm', '-journal'] as const;
 
 interface OpenHandle {
   db: Db;
   close: () => void;
   verify: () => void;
 }
+
+interface FileStamp {
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}
+
+const stampOf = (path: string): FileStamp => {
+  const stat = statSync(path);
+  return { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
+};
+
+const stampChanged = (before: FileStamp, after: FileStamp): boolean =>
+  before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs;
+
+const cleanupDir = (dir: string | undefined): void => {
+  if (dir) rmSync(dir, { recursive: true, force: true });
+};
 
 async function openReadOnly(databasePath: string): Promise<OpenHandle> {
   if (databasePath === ':memory:') throw new DataError('OpenCode database path is ":memory:"; there is no local file to read.');
@@ -133,15 +161,13 @@ async function openReadOnly(databasePath: string): Promise<OpenHandle> {
       `No OpenCode database found at ${databasePath}. Either OpenCode has not run here, its database lives somewhere else (XDG_DATA_HOME / OPENCODE_DB), or it uses a release-channel database (opencode-<channel>.db) that this reader does not discover.`,
     );
   }
-  if (['-wal', '-shm', '-journal'].some((suffix) => existsSync(`${databasePath}${suffix}`))) {
-    throw new DataError(`OpenCode database at ${databasePath} has a live SQLite journal/WAL sidecar; this audit stops instead of reporting stale data. Close OpenCode and retry after SQLite has checkpointed and removed the sidecars; Cairn will not checkpoint or delete them.`);
-  }
+  if (SIDECAR_SUFFIXES.some((suffix) => existsSync(`${databasePath}${suffix}`))) return openSnapshotReadOnly(databasePath);
   try {
     const DatabaseCtor = (await import('better-sqlite3')).default;
-    const initial = statSync(databasePath);
+    const initial = stampOf(databasePath);
     const uri = `${pathToFileURL(resolve(databasePath)).href}?mode=ro&immutable=1`;
     const db = new DatabaseCtor(uri, { readonly: true, fileMustExist: true });
-    if (['-wal', '-shm', '-journal'].some((suffix) => existsSync(`${databasePath}${suffix}`))) {
+    if (SIDECAR_SUFFIXES.some((suffix) => existsSync(`${databasePath}${suffix}`))) {
       db.close();
       throw new DataError(`OpenCode database at ${databasePath} changed while opening; a fresh consistent read is unavailable and its sessions are excluded as unknown.`);
     }
@@ -149,8 +175,8 @@ async function openReadOnly(databasePath: string): Promise<OpenHandle> {
       db,
       close: () => db.close(),
       verify: () => {
-        const current = statSync(databasePath);
-        if (initial.size !== current.size || initial.mtimeMs !== current.mtimeMs || initial.ctimeMs !== current.ctimeMs || ['-wal', '-shm', '-journal'].some((suffix) => existsSync(`${databasePath}${suffix}`))) {
+        const current = stampOf(databasePath);
+        if (stampChanged(initial, current) || SIDECAR_SUFFIXES.some((suffix) => existsSync(`${databasePath}${suffix}`))) {
           throw new DataError(`OpenCode database at ${databasePath} changed while it was being read; a fresh consistent read is unavailable and its sessions are excluded as unknown.`);
         }
       },
@@ -158,6 +184,54 @@ async function openReadOnly(databasePath: string): Promise<OpenHandle> {
   } catch (error) {
     if (error instanceof DataError) throw error;
     throw new DataError(`OpenCode database at ${databasePath} could not be opened in immutable read-only mode (${sqliteCode(error)}); its sessions are excluded as unknown.`);
+  }
+}
+
+async function openSnapshotReadOnly(databasePath: string): Promise<OpenHandle> {
+  const sourceStamp = stampOf(databasePath);
+  const sourceSidecarStamps = new Map<string, FileStamp>(
+    SIDECAR_SUFFIXES.filter((suffix) => existsSync(`${databasePath}${suffix}`)).map((suffix) => [suffix, stampOf(`${databasePath}${suffix}`)]),
+  );
+  let snapshotDir: string | undefined;
+  try {
+    snapshotDir = mkdtempSync(join(tmpdir(), 'cairn-opencode-snap-'));
+    const snapshotPath = join(snapshotDir, 'opencode.db');
+    copyFileSync(databasePath, snapshotPath);
+    for (const suffix of sourceSidecarStamps.keys()) copyFileSync(`${databasePath}${suffix}`, `${snapshotPath}${suffix}`);
+    // The source must not change while it is being copied: a torn or
+    // mid-write copy is not a point-in-time snapshot, so stop honestly.
+    if (stampChanged(sourceStamp, stampOf(databasePath)) || [...sourceSidecarStamps].some(([suffix, before]) => stampChanged(before, stampOf(`${databasePath}${suffix}`)))) {
+      throw new DataError(`OpenCode database at ${databasePath} changed while it was being snapshotted; a fresh consistent read is unavailable and its sessions are excluded as unknown.`);
+    }
+    const DatabaseCtor = (await import('better-sqlite3')).default;
+    const url = `${pathToFileURL(snapshotPath).href}?mode=ro&immutable=1`;
+    const db = new DatabaseCtor(url, { readonly: true, fileMustExist: true });
+    if (SIDECAR_SUFFIXES.some((suffix) => !sourceSidecarStamps.has(suffix) && existsSync(`${snapshotPath}${suffix}`))) {
+      db.close();
+      throw new DataError(`OpenCode database snapshot for ${databasePath} could not be opened without writing next to it; its sessions are excluded as unknown.`);
+    }
+    return {
+      db,
+      close: () => {
+        try {
+          db.close();
+        } finally {
+          cleanupDir(snapshotDir);
+        }
+      },
+      verify: () => {
+        if (
+          stampChanged(sourceStamp, stampOf(databasePath)) ||
+          [...sourceSidecarStamps].some(([suffix, before]) => !existsSync(`${databasePath}${suffix}`) || stampChanged(before, stampOf(`${databasePath}${suffix}`)))
+        ) {
+          throw new DataError(`OpenCode database at ${databasePath} changed while it was being read; a fresh consistent read is unavailable and its sessions are excluded as unknown.`);
+        }
+      },
+    };
+  } catch (error) {
+    cleanupDir(snapshotDir);
+    if (error instanceof DataError) throw error;
+    throw new DataError(`OpenCode database at ${databasePath} could not be snapshotted and opened in immutable read-only mode (${sqliteCode(error)}); its sessions are excluded as unknown.`);
   }
 }
 
@@ -667,7 +741,7 @@ export interface OpenCodeDatabaseSummary {
 }
 
 export const OPENCODE_LIMITATIONS: string[] = [
-  'Read-only: this reader uses SQLite immutable read-only mode only when no journal/WAL sidecar exists; when a live sidecar is present, sessions are excluded as unknown rather than risking a stale or torn read. Source files are never copied or changed.',
+  'Read-only with snapshot copies: the database is opened in SQLite immutable read-only mode, and when a live journal/WAL sidecar is present the database and its sidecars are first copied to a private temporary snapshot directory and the snapshot is opened instead. The source is never read directly while live, checkpointed, written or deleted. Data read is a point-in-time snapshot (uncheckpointed WAL content is not visible); if the source changes during the copy or read, or the snapshot cannot be opened, the audit fails rather than reporting stale data as fresh.',
   'OpenCode storage is not a documented stable API; a host version change can change table or JSON shapes, and unknown shapes degrade to fewer observations instead of a false report.',
   'Only opencode.db (or an explicit OPENCODE_DB override) is read. Release-channel databases (opencode-<channel>.db) and the frozen pre-SQLite flat-file layout are not read.',
   'Token counts are provider-reported per assistant message, summed verbatim. They say nothing measured about subscription quota or cost, and this reader never converts them into either; it does not even select cost columns. In v1, upstream overwrites a multi-step message\'s tokens on each step-finish, so output/reasoning for multi-step messages can be undercounted; v2 compaction-message tokens are excluded from assistant usage.',
