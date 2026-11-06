@@ -8,6 +8,7 @@ Status and scope: this release ships audit readers for three hosts — Claude Co
 
 - `cairn optimize coverage` - per-host inventory of what session data each installed host exposes locally: observations (session transcripts, tool events, provider-reported token counts, tool output sizes), estimates (data that exists but cannot be relied on), and unavailable data (such as subscription limit status). It reads no private data - only checks that host directories exist. It also distinguishes application type and local/cloud orchestration. Codex honors `CODEX_HOME`; OpenCode honors `XDG_DATA_HOME` and `OPENCODE_DB`, and those overrides are named in the per-field detail.
 - `cairn optimize audit --consent --host codex|opencode|claude-code` - once consent is given, reads the selected host's local session data and reports the ranked evidence, e.g.:
+- `cairn optimize compare --baseline <report.json> --current <report.json>` - compares two audit reports supplied by the user. It reads only those JSON files and does not scan host data or save a baseline. Matching host, project and coverage allow descriptive metric deltas; mismatches show each report's observed metrics side by side and omit deltas. Capped, malformed or usage-incomplete reports are labeled partial. Optional outcomes and elapsed times are included only when supplied explicitly.
 
 ```
 Cairn Optimize audit - claude-code - read-only; provenance and limits listed below.
@@ -58,14 +59,20 @@ Run `cairn optimize coverage` on your machine for the full matrix with per-field
 ## Options and exit codes
 
 ```
-cairn optimize coverage              no consent needed; reads no private data
-cairn optimize audit --consent       full local audit for the selected host
+cairn optimize coverage              no consent needed; checks host directories only
+cairn optimize audit --consent       local audit (Claude Code is the default host)
   --host <host>                      claude-code (default), codex or opencode
-  --project <dir|name>               audit one project (default: every project)
-  --sessions <n>                     override the 500-session cap (largest sessions first)
+  --project <dir|name>               audit one project (default: every project; `.` means current directory)
+  --sessions <n>                     override the 500-session cap (largest files first by default)
+  --recent                           prioritize recent files (Claude/Codex mtime estimate; OpenCode session activity)
   --home <dir>                       alternate host home (tests, alternate installs)
   --json                             full machine-readable report with provenance labels
 Global flags: --json --quiet --verbose; `cairn optimize --help` for details
+
+cairn optimize compare --baseline <report.json> --current <report.json>
+  --baseline-outcome completed|not-completed|unknown
+  --current-outcome completed|not-completed|unknown
+  --baseline-elapsed-ms <n> --current-elapsed-ms <n>  explicitly supplied values only
 ```
 
 Exit codes follow the project convention: 0 success, 2 invalid arguments, 3 missing resource (no consent, or no session data found), 1 unexpected error. Failed runs still emit a JSON envelope in `--json` mode (`ok: false`, `status`, `errors`) in addition to a stderr line. Malformed or truncated transcript lines and unreadable sessions degrade the report's completeness and are always counted in the report - never silently dropped and never counted as zeros.
@@ -74,6 +81,7 @@ Exit codes follow the project convention: 0 success, 2 invalid arguments, 3 miss
 
 - All three host layouts are verified against upstream source but are not documented stable APIs; a version change of a host can change what is observable, and unknown shapes degrade to fewer observations instead of a false report. Agent transcripts nested under per-session subdirectories are covered for Claude Code; their layout is also an undocumented host detail.
 - Overhead is real and reported in every run (`overhead.elapsedMs`): reading a full multi-gigabyte history takes on the order of a minute. Use `--project` to focus the scan.
+- The 500-session cap is applied after project selection. By default all hosts select larger files first. With `--recent`, Claude Code and Codex order by file modification time, which is only a recency estimate; OpenCode uses stored session activity timestamps. Reports count sessions skipped at the cap, so capped runs are partial and are not a representative sample by default.
 - Usage attribution is limited by what each host records: Claude Code counts each message+request identity once (later snapshots replace earlier ones); Codex attributes each response delta to the model named by the most recent `turn_context` line; OpenCode multi-step v1 messages can be undercounted because upstream overwrites their tokens per step, and v2 compaction-message tokens are excluded.
-- The audit answers what is observable in local session data. It does not see prompt-caching economics for the user's subscription, limit states, cloud-only data, or time and task success - those need the measurement protocol in the roadmap and remain future work.
+- The audit answers what is observable in local session data. `compare` works only from two user-supplied reports and cannot verify that they describe the same task or time window. It labels matching-scope metric differences as descriptive, never as savings; cross-host or different-project/coverage reports are shown side by side without deltas. Task outcomes and elapsed times remain `unknown` unless explicitly supplied for both reports. Subscription prompt-caching economics, limit states, and cloud-only data remain unavailable.
 - No intervention ships: nothing rewrites outputs, suggest deltas during sessions, or caches anything. Milestone 2 requires separate measured evidence before any intervention exists.

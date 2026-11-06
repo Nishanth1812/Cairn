@@ -20,6 +20,7 @@
   "files": [
     "bin",
     "dist",
+    "docs/optimize.md",
     "LICENSE"
   ],
   "scripts": {

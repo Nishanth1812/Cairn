@@ -47,6 +47,10 @@ cairn context stats --since 7d                     # is it helping?
 Add `--json` for machine output. `cairn context --help` lists every command.
 For a query that is also a command name, use `cairn context -- "doctor"`.
 
+### Audit assistant sessions
+
+`cairn optimize coverage` shows which local session fields Claude Code, Codex, and OpenCode expose. To read a host's session history, choose it explicitly and pass `--consent`, for example `cairn optimize audit --host codex --consent`. The audit is read-only and reports observed local usage; it does not infer subscription quota, cost, or task success. See the [Cairn Optimize privacy and coverage guide](docs/optimize.md) before auditing.
+
 ## How it works
 
 1. **Index.** Files are chunked along symbol boundaries and split above 60 lines or about 600 tokens. SQLite FTS5 weights file paths and symbol names above body mentions. Ignored files, binaries, and sensitive paths (`.env*`, keys) are skipped.
