@@ -1,12 +1,15 @@
-// `cairn optimize`: the read-only, opt-in audit entry point (first release: coverage matrix for all
-// three hosts, transcript audit for the one verified host). It is kept apart from the context
-// command router so the audit loads no indexing or storage code, stays read-only by construction
-// and can be removed without touching existing commands.
+// `cairn optimize`: the read-only, opt-in audit entry point (coverage matrix for all three
+// hosts, transcript audit for the selected host). It is kept apart from the context command
+// router so the audit loads no indexing or storage code, stays read-only by construction and
+// can be removed without touching existing commands.
 import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { runAudit, DataError } from '../optimize/audit.js';
+import { runAudit, DataError, type AuditHost } from '../optimize/audit.js';
 import { hostCoverage } from '../optimize/hosts.js';
+import { claudeProjectsRoot } from '../optimize/claudeTranscript.js';
+import { codexProjectsRoot } from '../optimize/codexTranscript.js';
+import { opencodeDatabasePath } from '../optimize/opencodeTranscript.js';
 import { redactDeep, redactSafe } from '../core/security/redactor.js';
 
 type Result = { code: number; status?: string; data?: unknown; warnings?: string[]; errors?: string[] };
@@ -14,17 +17,21 @@ type Result = { code: number; status?: string; data?: unknown; warnings?: string
 const HELP = `cairn optimize — read-only, opt-in audit of local assistant session data
 
 Usage: cairn optimize coverage              what session data each installed host exposes locally (reads no private data)
-       cairn optimize audit --consent       audit local Claude Code transcripts (read-only)
+       cairn optimize audit --consent       audit local session data for the selected host (read-only)
 
 The audit opens host session files read-only, never writes them, and reports only observed
 opportunities: repeated reads and searches, large tool outputs, and provider-reported usage.
 Token estimates are labeled; subscription quota and cost are never inferred.
 
 Audit options:
-  --project <dir|name>   audit one Claude Code project directory (default: every project)
+  --host <host>          which host to audit: claude-code (default), codex or opencode
+  --project <dir|name>   audit one project (Claude Code directory name, Codex working
+                         directory, or OpenCode project directory; default: every project)
   --home <dir>           override the host home directory (for tests and alternate installs)
 Global flags: --json --quiet --verbose
 Run \`cairn optimize coverage\` for the per-host coverage matrix and its limitations.`;
+
+const HOSTS: AuditHost[] = ['claude-code', 'codex', 'opencode'];
 
 class OptimizeError extends Error { constructor(message: string, readonly exitCode: number, readonly status: string) { super(message); } }
 
@@ -88,21 +95,50 @@ export async function runOptimize(argv: string[]): Promise<number> {
     if (!value || value.startsWith('--')) throw new OptimizeError(`${name} requires a value`, 2, 'invalid_arguments');
     return value;
   };
-  // Resolve once: --home points the whole audit at an alternate host home (tests, alternate installs).
-  const home = command === 'audit' || command === 'coverage' ? (option('--home') ?? homeDirectory()) : undefined;
+  // Unknown flags fail closed: a misspelled option (e.g. --projct) must never fall back to
+  // scanning every project when the user asked for one project.
+  const knownFlags = new Set(['--consent', '--project', '--home', '--sessions', '--host']);
+  const rejectUnknownFlags = (): void => {
+    for (let index = 0; index < flags.length; index++) {
+      const flag = flags[index]!;
+      if (!flag.startsWith('--')) continue;
+      if (!knownFlags.has(flag)) throw new OptimizeError(`Unknown flag "${flag}".`, 2, 'invalid_arguments');
+      if (flag !== '--consent') {
+        // Value flags consume the next token; it was validated by option() above.
+        index++;
+      }
+    }
+  };
+  // Resolve once: --home points the whole audit at an alternate host home (tests, alternate
+  // installs). Resolved inside the result wrapper so a missing value is reported like any
+  // other invalid argument, including the JSON error envelope.
+  const resolveHome = (): string => option('--home') ?? homeDirectory();
 
   const result = await (async (): Promise<Result> => {
     if (!command || command === 'help' || command === '--help' || command === '-h') return { code: 0, data: HELP };
     if (command === 'coverage') {
-      const hosts = hostCoverage(home!);
+      const hosts = hostCoverage(resolveHome());
       if (json) return { code: 0, data: { hosts } };
       return { code: 0, data: coverageText(hosts) };
     }
     if (command === 'audit') {
+      rejectUnknownFlags();
+      const home = resolveHome();
+      const rawHost = option('--host');
+      let host: AuditHost = 'claude-code';
+      if (rawHost !== undefined) {
+        if (!HOSTS.includes(rawHost as AuditHost)) throw new OptimizeError(`--host "${rawHost}" is not a known host. Expected one of: ${HOSTS.join(', ')}.`, 2, 'invalid_arguments');
+        host = rawHost as AuditHost;
+      }
       const project = option('--project');
       if (!flags.includes('--consent')) {
+        const location = host === 'codex'
+          ? `session rollouts under ${codexProjectsRoot(home)} (CODEX_HOME or ~/.codex/sessions)`
+          : host === 'opencode'
+            ? `the database at ${opencodeDatabasePath({ home })}`
+            : `transcripts under ${claudeProjectsRoot(home)}`;
         throw new OptimizeError(
-          `Reading local session history requires consent. The audit would read transcripts under ${home!.replace(/\\/g, '/')}/.claude/projects read-only, change nothing, and produce a local report. Re-run with --consent.`,
+          `Reading local session history requires consent. The audit would read ${location} read-only, change nothing, and produce a local report. Re-run with --consent.`,
           3, 'missing_resource');
       }
       const limit = option('--sessions');
@@ -110,15 +146,22 @@ export async function runOptimize(argv: string[]): Promise<number> {
       if (maxSessions !== undefined && (!Number.isSafeInteger(maxSessions) || maxSessions < 1)) {
         throw new OptimizeError('--sessions requires a positive integer', 2, 'invalid_arguments');
       }
-      const report = await runAudit({ home: home!, project, maxSessions });
+      const report = await runAudit({ home, project, maxSessions, host });
       if (json) return { code: 0, data: report };
       return { code: 0, data: summaryText(report) };
     }
     throw new OptimizeError(`Unknown optimize command "${command ?? ''}".\n\n${HELP}`, 2, 'invalid_arguments');
-  })();
+  })().catch((error: unknown): Result => {
+    if (error instanceof OptimizeError) return { code: error.exitCode, status: error.status, errors: [error.message] };
+    if (error instanceof DataError) return { code: 3, status: 'missing_resource', errors: [error.message] };
+    return { code: 1, status: 'error', errors: [error instanceof Error ? error.message : String(error)] };
+  });
 
   if (json) {
     process.stdout.write(`${JSON.stringify(redactDeep({ schema_version: 1, command: `optimize ${command ?? ''}`.trim(), ok: result.code === 0, status: result.status ?? (result.code === 0 ? 'success' : 'error'), data: result.data ?? null, warnings: result.warnings ?? [], errors: result.errors ?? [] }), null, 2)}\n`);
+    // The envelope carries the error for machines; stderr repeats it for humans (and keeps
+    // the historical stderr contract for failed runs).
+    for (const error of result.errors ?? []) process.stderr.write(`Error: ${redactSafe(error)}\n`);
     return result.code;
   }
   if (result.code !== 0) {
@@ -136,8 +179,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
   process.stdout.on('error', (error: NodeJS.ErrnoException) => { if (error.code !== 'EPIPE') throw error; process.exit(process.exitCode ?? 0); });
   runOptimize(process.argv.slice(2)).then((code) => { process.exitCode = code; })
     .catch((error: unknown) => {
-      if (error instanceof OptimizeError) { process.stderr.write(`Error: ${redactSafe(error.message)}\n`); process.exitCode = error.exitCode; return; }
       process.stderr.write(`Error: ${redactSafe(error instanceof Error ? error.message : String(error))}\n`);
-      process.exitCode = error instanceof DataError ? 3 : 1;
+      process.exitCode = 1;
     });
 }

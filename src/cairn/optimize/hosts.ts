@@ -1,8 +1,10 @@
 // Inventory of what each installed assistant host actually exposes locally. Static facts plus a
 // local presence detector; this module reads no private data (only directory existence), so it can
 // run without consent. Statuses are honest: "observable" means the data is locally readable and was
-// verified, "estimated" means the source exists but cannot be relied on (or has no reader yet), and
-// "unavailable" means the host does not store it locally.
+// verified against the upstream source (see the reader headers for the exact upstream paths),
+// "estimated" means the source exists but cannot be relied on, and "unavailable" means the host
+// does not store it locally — or, like Codex re-read identity, that a verified reader deliberately
+// does not fabricate it.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -61,14 +63,14 @@ export function hostCoverage(home: string): HostInventory[] {
       orchestration: 'local session logs; usage limits are cloud-side and not exposed locally by this reader',
       dataRoot: join(home, '.codex'),
       installed: codexInstalled(home),
-      detection: 'checks for ~/.codex',
-      reader: 'not implemented',
+      detection: 'checks for ~/.codex (CODEX_HOME overrides the data root)',
+      reader: 'implemented',
       categories: {
-        sessions: { coverage: 'estimated', detail: 'session rollout files exist under ~/.codex/sessions as JSONL; the reader is not implemented in this release and the layout must be verified before relying on it' },
-        'tool events': { coverage: 'estimated', detail: 'rollout files are expected to record tool activity, unverified by this release' },
-        'provider usage': { coverage: 'estimated', detail: 'token counts are expected in rollout payloads, unverified by this release' },
-        'output sizes': { coverage: 'unavailable', detail: 'no verified measure of tool output sizes in the local rollout format' },
-        're-read identity': { coverage: 'unavailable', detail: 'no verified per-file content identity in the local rollout format' },
+        sessions: { coverage: 'observable', detail: 'rollout JSONL under ~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<thread-id>.jsonl (CODEX_HOME overrides the root), verified against openai/codex; compressed .zst rollouts and archived sessions are excluded, not guessed' },
+        'tool events': { coverage: 'observable', detail: 'response_item and event_msg records pair tool calls with outputs; command arguments, patch text and MCP arguments are never retained, only executable names are reported' },
+        'provider usage': { coverage: 'observable', detail: 'token_count and token_usage_record payloads carry cumulative session totals; the latest snapshot wins, rate limits are never read, and usage is API accounting, not subscription billing or quota' },
+        'output sizes': { coverage: 'observable', detail: 'tool output lengths are measurable without retaining content (same 20k-char threshold as the other hosts)' },
+        're-read identity': { coverage: 'unavailable', detail: 'no verified per-file read event exists in rollouts: file access goes through opaque shell commands, so this reader deliberately fabricates nothing' },
         'limit and quota status': { coverage: 'unavailable', detail: 'Codex pricing documents usage as factor-dependent; subscription quota state is not available locally' },
         'instruction size': { coverage: 'estimated', detail: 'AGENTS.md sizes on disk are measurable, but session loads are not verified' },
       },
@@ -80,14 +82,14 @@ export function hostCoverage(home: string): HostInventory[] {
       orchestration: 'local storage plus provider-remote model calls; provider behavior varies per configuration',
       dataRoot: join(home, '.local', 'share', 'opencode'),
       installed: opencodeInstalled(home),
-      detection: 'checks for ~/.config/opencode or ~/.local/share/opencode',
-      reader: 'not implemented',
+      detection: 'checks for ~/.config/opencode or ~/.local/share/opencode (XDG_DATA_HOME and OPENCODE_DB override the directory and file)',
+      reader: 'implemented',
       categories: {
-        sessions: { coverage: 'estimated', detail: 'project storage directories exist under the data root; the layout differs across OpenCode versions and has no reader in this release' },
-        'tool events': { coverage: 'estimated', detail: 'part records are expected to include tool activity, unverified by this release' },
-        'provider usage': { coverage: 'estimated', detail: 'token counts may exist in message records but depend on the configured provider, unverified by this release' },
-        'output sizes': { coverage: 'unavailable', detail: 'no verified measure of tool output sizes in the local storage layout' },
-        're-read identity': { coverage: 'unavailable', detail: 'no verified per-file content identity in the local storage layout' },
+        sessions: { coverage: 'observable', detail: 'SQLite database (opencode.db, or OPENCODE_DB) holding v1 (session/message/part) and v2 (session_v2/session_message/session_part) tables, verified against upstream OpenCode; read read-only in immutable mode or via a private temp copy, so no journal/WAL/SHM file is ever created next to the source' },
+        'tool events': { coverage: 'observable', detail: 'tool parts carry the tool name, input and completed output; raw command strings are never reported, only executable names' },
+        'provider usage': { coverage: 'observable', detail: 'assistant messages carry provider-reported input/output/reasoning/cache tokens, summed verbatim; they are never converted to cost or quota, and cost columns are never even selected' },
+        'output sizes': { coverage: 'observable', detail: 'completed tool output lengths are measurable without retaining content (same 20k-char threshold as the other hosts)' },
+        're-read identity': { coverage: 'observable', detail: 'completed read outputs can be fingerprinted to tell identical re-reads from re-reads after change; the fingerprint is a truncated hash, not content' },
         'limit and quota status': { coverage: 'unavailable', detail: 'depends on the provider; no local source is verified' },
         'instruction size': { coverage: 'estimated', detail: 'AGENTS.md sizes on disk are measurable, but session loads are not verified' },
       },

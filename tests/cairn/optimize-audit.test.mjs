@@ -137,12 +137,12 @@ test('coverage matrix lists all three hosts with honest statuses and reads no pr
     const hosts = json.data.hosts;
     assert.equal(hosts[0].id, 'claude-code');
     assert.equal(hosts[0].reader, 'implemented');
-    assert.deepEqual(hosts.slice(1).map((host) => host.reader), ['not implemented', 'not implemented']);
+    assert.deepEqual(hosts.map((host) => host.reader), ['implemented', 'implemented', 'implemented']);
     for (const host of hosts) {
       assert.equal(host.categories['limit and quota status'].coverage, 'unavailable', `${host.id} must not claim quota observability`);
     }
     const codex = hosts.find((host) => host.id === 'codex');
-    assert.equal(codex.categories['re-read identity'].coverage, 'unavailable');
+    assert.equal(codex.categories['re-read identity'].coverage, 'unavailable'); // rollouts have no verified per-file read event
     assert.match(hosts[0].categories.sessions.detail, /not a documented stable API/);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
