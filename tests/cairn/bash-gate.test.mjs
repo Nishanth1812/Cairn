@@ -8,11 +8,11 @@ import { join, resolve } from 'node:path';
 import { stateDbPath } from './stateDb.mjs';
 import { after, before, test } from 'node:test';
 
-const BIN = resolve('dist/waymark.js');
+const BIN = resolve('dist/context.js');
 const base = resolve('.test-tmp'); // inside the checkout: the system temp dir is a protected path for auto-onboarding
 mkdirSync(base, { recursive: true });
 const repo = mkdtempSync(join(base, 'repo-'));
-const home = mkdtempSync(join(tmpdir(), 'waymark-home-'));
+const home = mkdtempSync(join(tmpdir(), 'cairn-home-'));
 const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'r'), LOCALAPPDATA: join(home, 'l'), XDG_CONFIG_HOME: join(home, 'c'), XDG_STATE_HOME: join(home, 's'), XDG_CACHE_HOME: join(home, 'k') };
 delete env.CLAUDE_CODE_SESSION_ID; // a live session's id would leak into the CLI's lookup records
 const cli = (...args) => JSON.parse(execFileSync('node', ['--no-warnings', BIN, ...args, '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
@@ -64,7 +64,7 @@ test('a pipe filter on another command is not a search and is not recorded', () 
 
 test('feedback remains optional and broad searches continue without it', () => {
   const session = 'bash-gate-d';
-  cliAs(session, 'search', 'computeInvoiceTotal'); // feedback must cite a query Waymark actually ran in this session
+  cliAs(session, 'search', 'computeInvoiceTotal'); // feedback must cite a query Cairn Context actually ran in this session
   bash(session, 'grep -r a .');
   bash(session, 'grep -r b .');
   const before = bash(session, 'grep -r c .');

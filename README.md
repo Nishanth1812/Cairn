@@ -4,9 +4,9 @@ Cairn is a toolbox for working with AI coding agents. Its first tool, **Cairn Co
 that answers "where is X handled?" in a few hundred tokens, so the agent stops grepping and reading whole files.
 
 - **Ranked lookups.** `cairn context "where is auth handled"` returns ranked, line-ranged snippets and definitions, not a pile of files, packed to a token budget (typically a few hundred to ~1k tokens).
-- **Measured, not promised.** In controlled A/Bs with a small model on Playwright and Django, agents using Cairn were not faster (about +2 to +7 s per task) and not clearly cheaper. See [docs/waymark/ab-results.md](docs/waymark/ab-results.md). Try it on your own repo and check `cairn context stats`.
+- **Measured, not promised.** In controlled A/Bs with a small model on Playwright and Django, agents using Cairn were not faster (about +2 to +7 s per task) and not clearly cheaper. See [docs/context/ab-results.md](docs/context/ab-results.md). Try it on your own repo and check `cairn context stats`.
 - **Local only.** Everything runs on your machine in a SQLite database. Nothing is uploaded, and the code makes no network calls. Cairn excludes common sensitive paths and redacts recognised secrets, but detection is not exhaustive; avoid indexing repositories containing secrets you cannot safely store locally.
-- **Honest numbers.** `cairn context stats` reports only what it observed (adoption, follow-through, fallbacks), not estimated savings. See [docs/waymark/evaluating.md](docs/waymark/evaluating.md).
+- **Honest numbers.** `cairn context stats` reports only what it observed (adoption, follow-through, fallbacks), not estimated savings. See [docs/context/evaluating.md](docs/context/evaluating.md).
 
 ## Install
 

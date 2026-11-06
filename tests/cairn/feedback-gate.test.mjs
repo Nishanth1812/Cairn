@@ -6,11 +6,11 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, before, test } from 'node:test';
 
-const BIN = resolve('dist/waymark.js');
+const BIN = resolve('dist/context.js');
 const base = resolve('.test-tmp'); // inside the checkout: the system temp dir is a protected path for auto-onboarding
 mkdirSync(base, { recursive: true });
 const repo = mkdtempSync(join(base, 'repo-'));
-const home = mkdtempSync(join(tmpdir(), 'waymark-home-'));
+const home = mkdtempSync(join(tmpdir(), 'cairn-home-'));
 const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'r'), LOCALAPPDATA: join(home, 'l'), XDG_CONFIG_HOME: join(home, 'c'), XDG_STATE_HOME: join(home, 's'), XDG_CACHE_HOME: join(home, 'k') };
 delete env.CLAUDE_CODE_SESSION_ID; // a live session's id would leak into the CLI's lookup records
 const cli = (...args) => JSON.parse(execFileSync('node', ['--no-warnings', BIN, ...args, '--json'], { cwd: repo, env, encoding: 'utf8' })).data;

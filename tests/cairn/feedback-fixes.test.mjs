@@ -7,9 +7,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, before, test } from 'node:test';
 
-const BIN = resolve('dist/waymark.js');
-const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'waymark-ws-'))); // outside this checkout, so it is a plain folder rather than part of a repo; realpath expands 8.3 short names, which the registry stores in long form
-const home = mkdtempSync(join(tmpdir(), 'waymark-home-'));
+const BIN = resolve('dist/context.js');
+const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'cairn-ws-'))); // outside this checkout, so it is a plain folder rather than part of a repo; realpath expands 8.3 short names, which the registry stores in long form
+const home = mkdtempSync(join(tmpdir(), 'cairn-home-'));
 const env = { ...process.env, CLAUDE_CODE_SESSION_ID: undefined, TEMP: join(home, 't'), TMP: join(home, 't'), TMPDIR: join(home, 't'), HOME: home, USERPROFILE: home, APPDATA: join(home, 'r'), LOCALAPPDATA: join(home, 'l'), XDG_CONFIG_HOME: join(home, 'c'), XDG_STATE_HOME: join(home, 's'), XDG_CACHE_HOME: join(home, 'k') };
 const run = (cwd, ...args) => spawnSync('node', ['--no-warnings', BIN, ...args], { cwd, env, encoding: 'utf8' });
 const json = (cwd, ...args) => JSON.parse(execFileSync('node', ['--no-warnings', BIN, ...args, '--json'], { cwd, env, encoding: 'utf8' })).data;

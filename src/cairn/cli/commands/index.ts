@@ -451,7 +451,7 @@ Fell back to a sweep after a lookup: ${stats.quality.fallbackPercent == null ? '
       const indexStarted = Date.now();
       await indexRepository(db, repo.id, repo.root_path);
       const indexMs = Date.now() - indexStarted;
-      const queryFile = join(process.cwd(), 'tests', 'waymark', 'golden', 'queries.json');
+      const queryFile = join(process.cwd(), 'tests', 'cairn', 'golden', 'queries.json');
       if (!existsSync(queryFile)) fail(`Golden query file not found: ${queryFile}`, 3);
       const queries = (JSON.parse(await readFile(queryFile, 'utf8')) as RetrievalQuery[]).filter((query) => query.repo ? query.repo === repo.display_name : resolve(repo.root_path) === resolve(process.cwd()));
       const report = await runRetrievalBenchmark(db, repo.id, repo.root_path, queries, join(paths.state, 'benchmarks'), indexMs);

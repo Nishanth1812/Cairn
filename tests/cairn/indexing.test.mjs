@@ -10,7 +10,7 @@ import { stateDbPath } from './stateDb.mjs';
 
 const exec = promisify(execFile);
 const base = resolve('.test-tmp');
-const cli = resolve('dist/waymark.js');
+const cli = resolve('dist/context.js');
 
 test('a plain UserPromptSubmit prompt skips hook state and database work', () => {
   const home = mkdtempSync(join(base, 'prompt-hook-home-'));

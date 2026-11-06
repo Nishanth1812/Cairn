@@ -12,15 +12,15 @@ sources:
   - id: openwiki-source-97a29712907bdf5f2cd43c6f
     resource: repo://rolldown.config.mjs
   - id: openwiki-source-1be5e4596ae39d893f018a54
-    resource: repo://src/waymark/cli/optimizeCommand.ts
+    resource: repo://src/cairn/cli/optimizeCommand.ts
   - id: openwiki-source-c5d923eee586a426ac8e5c4e
-    resource: repo://src/waymark/optimize/audit.ts
+    resource: repo://src/cairn/optimize/audit.ts
   - id: openwiki-source-8586bc725ec0edf818dfa019
-    resource: repo://src/waymark/optimize/claudeTranscript.ts
+    resource: repo://src/cairn/optimize/claudeTranscript.ts
   - id: openwiki-source-7abb93202debfc665a0a4b1e
-    resource: repo://src/waymark/optimize/hosts.ts
+    resource: repo://src/cairn/optimize/hosts.ts
   - id: openwiki-source-668c20b53105fc5d6c673b0c
-    resource: repo://tests/waymark/optimize-audit.test.mjs
+    resource: repo://tests/cairn/optimize-audit.test.mjs
 generated: { by: "opencode", at: "2026-11-05T11:43:19.037Z" }
 ---
 
@@ -30,14 +30,14 @@ generated: { by: "opencode", at: "2026-11-05T11:43:19.037Z" }
 
 ## Responsibility and entry points
 
-- `bin/cairn.mjs` routes `optimize` in-process (argv is rewritten, nothing is spawned) to `dist/optimize.js`, a second bundle built from `src/waymark/cli/optimizeCommand.ts` alongside the `dist/waymark.js` context tool. An unknown top-level command exits 2; a missing bundle exits 1 with a build hint.
-- `src/waymark/cli/optimizeCommand.ts` is self-runnable (its main guard lives in the same module), parses its own `--json/--quiet/--verbose` flags, and never imports the context command router or any indexing/storage code. That keeps the audit's module load cheap and removes any chance of the audit mutating context state.
+- `bin/cairn.mjs` routes `optimize` in-process (argv is rewritten, nothing is spawned) to `dist/optimize.js`, a second bundle built from `src/cairn/cli/optimizeCommand.ts` alongside the `dist/context.js` context tool. An unknown top-level command exits 2; a missing bundle exits 1 with a build hint.
+- `src/cairn/cli/optimizeCommand.ts` is self-runnable (its main guard lives in the same module), parses its own `--json/--quiet/--verbose` flags, and never imports the context command router or any indexing/storage code. That keeps the audit's module load cheap and removes any chance of the audit mutating context state.
 - Subcommands: `coverage` (inventory, no private reads, no consent needed) and `audit` (the consented transcript audit). `cairn optimize --help` prints usage; unknown subcommands exit 2.
 - `docs/optimize.md` is the user-facing documentation for both subcommands.
 
 ## The coverage inventory (observation versus guessing)
 
-`hostCoverage(home)` in `src/waymark/optimize/hosts.ts` is a static, honest inventory for the three installed hosts (Claude Code, Codex, OpenCode). For each host it records app type, orchestration (local versus cloud-only), the local data root, a detector, and per-category statuses:
+`hostCoverage(home)` in `src/cairn/optimize/hosts.ts` is a static, honest inventory for the three installed hosts (Claude Code, Codex, OpenCode). For each host it records app type, orchestration (local versus cloud-only), the local data root, a detector, and per-category statuses:
 
 - **observable** — locally readable and verified by this release (Claude Code sessions, tool events, provider usage, output sizes, re-read identity).
 - **estimated** — the source exists but this release has no reader or cannot yet rely on the layout (Codex and OpenCode sessions/usage; instruction-file loading for all hosts).
@@ -51,7 +51,7 @@ The only I/O the inventory performs is `existsSync` detection (`~/.claude/projec
 
 ## The transcript reader (Claude Code only)
 
-`src/waymark/optimize/claudeTranscript.ts` implements the one verified host reader:
+`src/cairn/optimize/claudeTranscript.ts` implements the one verified host reader:
 
 - `listClaudeProjects(home)` walks `~/.claude/projects/<project>` recursively, so agent transcripts stored in per-session subdirectories are covered as separate sessions. File sizes that cannot be statted are `null`, never zero — unreadable metadata stays unknown.
 - Per file, `ClaudeTranscript.read()` parses JSONL line by line. It absorbs assistant lines (model, `usage.input_tokens/output_tokens/cache_read_input_tokens/cache_creation_input_tokens` when the host records them, and `tool_use` inputs such as `file_path`, `pattern`, `path`, `command`) and pairs them with user `tool_result` records by `tool_use_id`. Unparseable lines (including the line being written while the file is read) are counted as `malformedLines` and skipped; unknown shapes never fail the file.
@@ -60,7 +60,7 @@ The only I/O the inventory performs is `existsSync` detection (`~/.claude/projec
 
 ## The audit orchestration
 
-`runAudit` in `src/waymark/optimize/audit.ts`:
+`runAudit` in `src/cairn/optimize/audit.ts`:
 
 - caps the scan at 500 sessions, largest first; sessions beyond the cap are counted and reported in the limitations ("rerun with --project to focus scope instead of inferring from partial data"), never silently truncated. `--sessions` overrides the cap.
 - separates provenance: sessions with provider-reported usage contribute their verbatim token sums per model (cache read and cache creation kept separate); sessions without usage are counted and their token side is flagged as estimate-only, using the project estimator (`chars/4 * 1.1`). The report is explicit that these are API token accounting and never converts them to subscription quota or cost.
@@ -78,7 +78,7 @@ The only I/O the inventory performs is `existsSync` detection (`~/.claude/projec
 
 ## Verification
 
-`tests/waymark/optimize-audit.test.mjs` black-boxes the built CLI against synthetic `~/.claude` fixtures (spawned through `bin/cairn.mjs`, so routing, bundling and exit codes are exercised):
+`tests/cairn/optimize-audit.test.mjs` black-boxes the built CLI against synthetic `~/.claude` fixtures (spawned through `bin/cairn.mjs`, so routing, bundling and exit codes are exercised):
 
 - help/unknown-subcommand exit codes; coverage lists all three hosts, marks Codex/OpenCode readers `not implemented`, and refuses quota observability on every host.
 - audit without consent exits 3 and reads nothing; audit with consent scans the fixture sessions (including a nested agent transcript), detects repeated reads (separating the case-insensitive same-path reads on Windows, and identical-versus-changed content), repeated searches, one large tool output, provider usage sums per model, estimate-only sessions, malformed/truncated lines, and the per-session session cap.

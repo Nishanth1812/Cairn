@@ -102,7 +102,7 @@ CREATE INDEX idx_symbols_file ON symbols(file_id);
 const v4 = `
 ALTER TABLE tool_calls DROP COLUMN baseline_tokens;
 `;
-// Per-agent call counts drive the sweep gate; feedback is how an agent reports a Waymark miss or bad output.
+// Per-agent call counts drive the sweep gate; feedback is how an agent reports a Cairn Context miss or bad output.
 const v5 = `
 ALTER TABLE tool_calls ADD COLUMN session TEXT;
 CREATE INDEX idx_tool_calls_session ON tool_calls(session, tool);
@@ -112,11 +112,11 @@ CREATE TABLE lookup_feedback (
 );
 CREATE INDEX idx_lookup_feedback_session ON lookup_feedback(session);
 `;
-// The query behind each Waymark lookup, so feedback can be checked against a search that actually ran.
+// The query behind each Cairn Context lookup, so feedback can be checked against a search that actually ran.
 const v6 = `
 ALTER TABLE tool_calls ADD COLUMN query TEXT;
 `;
-// The files each lookup returned (search/context) or read (Read), so stats can tell whether an agent used what Waymark found.
+// The files each lookup returned (search/context) or read (Read), so stats can tell whether an agent used what Cairn Context found.
 const v7 = `
 ALTER TABLE tool_calls ADD COLUMN paths TEXT;
 `;

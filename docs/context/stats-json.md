@@ -1,6 +1,6 @@
 # `cairn context stats --json`
 
-Shape returned by `getStats` (in `src/waymark/telemetry/stats.ts`), printed as JSON when `--json` is passed (and included in the `data` field of the `stats` command result). Counts come from the `tool_calls` table, written by real calls only: `search` and `context` when the CLI runs, native sweeps from the optional PreToolUse hook in an indexed repo, and `hook_prompt` when the prompt hook injects locations.
+Shape returned by `getStats` (in `src/cairn/telemetry/stats.ts`), printed as JSON when `--json` is passed (and included in the `data` field of the `stats` command result). Counts come from the `tool_calls` table, written by real calls only: `search` and `context` when the CLI runs, native sweeps from the optional PreToolUse hook in an indexed repo, and `hook_prompt` when the prompt hook injects locations.
 
 Top-level fields:
 

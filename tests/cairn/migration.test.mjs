@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { stateDbPath } from './stateDb.mjs';
 import { test } from 'node:test';
 
-const cli = resolve('dist/waymark.js');
+const cli = resolve('dist/context.js');
 const base = resolve('.test-tmp');
 const setup = () => {
   const home = mkdtempSync(join(base, 'migration-home-'));

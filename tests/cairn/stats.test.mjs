@@ -8,11 +8,11 @@ import { join, resolve } from 'node:path';
 import { stateDbPath } from './stateDb.mjs';
 import { after, before, test } from 'node:test';
 
-const BIN = resolve('dist/waymark.js');
+const BIN = resolve('dist/context.js');
 const base = resolve('.test-tmp'); // inside the checkout: the system temp dir is a protected path for auto-onboarding
 mkdirSync(base, { recursive: true });
 const repo = mkdtempSync(join(base, 'repo-'));
-const home = mkdtempSync(join(tmpdir(), 'waymark-home-'));
+const home = mkdtempSync(join(tmpdir(), 'cairn-home-'));
 const env = { ...process.env, CLAUDE_CODE_SESSION_ID: undefined, HOME: home, USERPROFILE: home, APPDATA: join(home, 'r'), LOCALAPPDATA: join(home, 'l'), XDG_CONFIG_HOME: join(home, 'c'), XDG_STATE_HOME: join(home, 's'), XDG_CACHE_HOME: join(home, 'k') };
 const cli = (...args) => JSON.parse(execFileSync('node', ['--no-warnings', BIN, ...args, '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
 // The PreToolUse hook gets the tool event on stdin, as Claude Code sends it.
@@ -37,7 +37,7 @@ test('the baseline column is gone from the tool_calls table', () => {
   try { assert.equal(db.prepare('PRAGMA table_info(tool_calls)').all().some((column) => column.name === 'baseline_tokens'), false); } finally { db.close(); }
 });
 
-test('search calls count as Waymark lookups, native sweeps count as native, ranged reads count as neither', () => {
+test('search calls count as Cairn Context lookups, native sweeps count as native, ranged reads count as neither', () => {
   cli('search', 'computeInvoiceTotal');
   assert.deepEqual(stats(), { percent: null, weftCalls: 2, nativeCalls: null, nativeCallsObserved: false });
   preToolUse('Grep', { pattern: 'computeInvoiceTotal' }); // advisory output does not change native-call accounting
