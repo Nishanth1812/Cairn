@@ -58,6 +58,7 @@ const sessionCLines = [
 const agentLines = [
   JSON.stringify(assistant('2026-11-01T09:46:00.000Z', 'claude-agent-model', { input_tokens: 10, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }, [use('g1', 'Read', { file_path: 'D:\\work\\agent\\read.ts' })])),
   JSON.stringify(userLine('2026-11-01T09:46:10.000Z', [result('g1', 'agent transcript content (never printed)')])),
+  JSON.stringify(assistant('2026-11-01T09:47:00.000Z', '<synthetic>', { input_tokens: 1, output_tokens: 2, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }, [])),
 ].join('\n');
 
 function writeHome() {
@@ -178,6 +179,8 @@ test('audit reports observed opportunities with evidence, keeps estimates separa
     assert.equal(report.usage.sessionsWithoutProviderUsage, 2);
     assert.ok(report.usage.estimatedTokensWithoutUsage > 0);
     assert.deepStrictEqual(report.usage.byModel['claude-test-model'], { sessions: 1, inputTokens: 1200, outputTokens: 300, cacheReadTokens: 500, cacheCreationTokens: 100 });
+    assert.ok(!('<synthetic>' in report.usage.byModel), 'host placeholder model is never reported verbatim as a model');
+    assert.deepStrictEqual(report.usage.byModel['synthetic (host placeholder, no provider usage)'], { sessions: 1, inputTokens: 1, outputTokens: 2, cacheReadTokens: 0, cacheCreationTokens: 0 });
     assert.match(report.usage.notes.join('\n'), /summed per model/);
 
     const read = report.opportunities.repeatedReads.find((row) => row.path.endsWith('app.ts'));

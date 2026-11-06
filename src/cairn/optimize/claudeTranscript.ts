@@ -155,7 +155,13 @@ export class ClaudeTranscript {
     const usage = isObject(message.usage) ? message.usage : undefined;
     const totals = usage ? parseUsage(usage) : undefined;
     if (totals) {
-      const model = asString(message.model) ?? 'unknown';
+      const rawModel = asString(message.model);
+      // The host writes some sessions under a placeholder model name (e.g. "<synthetic>"
+      // for subagent/hook traffic). Name those explicitly so downstream reports never
+      // mistake them for real provider models, and never merge them into a real model row.
+      const model = rawModel === undefined ? 'unknown'
+        : /^<synthetic>/i.test(rawModel) ? 'synthetic (host placeholder, no provider usage)'
+        : rawModel;
       // One API response can be written as several transcript lines sharing a message.id (and a
       // requestId), each carrying that response's full usage. Summing lines would count it once
       // per line, so count each message+request identity once. A repeated identity is a later,
