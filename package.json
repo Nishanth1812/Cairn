@@ -1,7 +1,7 @@
 {
   "name": "@nishanth1812/cairn",
   "version": "0.1.0",
-  "description": "Cairn: Waymark, a code index for AI coding agents, as one command.",
+  "description": "Cairn Context: a local code index for AI coding agents.",
   "type": "module",
   "repository": {
     "type": "git",
@@ -20,6 +20,7 @@
   "files": [
     "bin",
     "dist",
+    "docs/optimize.md",
     "LICENSE"
   ],
   "scripts": {
@@ -27,8 +28,8 @@
     "build": "tsc --noEmit && rolldown -c",
     "postbuild": "node -e \"const f=require('node:fs');try{f.renameSync('dist','dist-old')}catch{}f.renameSync('dist-next','dist');f.rmSync('dist-old',{recursive:true,force:true})\"",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src/waymark",
-    "test": "node --test \"tests/waymark/*.test.mjs\"",
+    "lint": "eslint src/cairn",
+    "test": "node --test \"tests/cairn/*.test.mjs\"",
     "check": "npm run lint && npm run typecheck && npm run build && npm test",
     "prepublishOnly": "npm run check"
   },

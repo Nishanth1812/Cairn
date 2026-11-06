@@ -1,0 +1,50 @@
+import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { test } from 'node:test';
+
+const bin = resolve('bin/cairn.mjs');
+const run = (...args) => execFileSync(process.execPath, [bin, ...args], { encoding: 'utf8' });
+
+test('Cairn Context is the only code index command', () => {
+  assert.match(run('--help'), /\bcontext\s+code index/);
+  const help = run('context', '--help');
+  assert.match(help, /Usage: cairn context "<question>"/);
+  const oldCommand = spawnSync(process.execPath, [bin, 'waymark', '--help'], { encoding: 'utf8' });
+  assert.equal(oldCommand.status, 2);
+  assert.match(oldCommand.stderr, /unknown command "waymark"/);
+});
+
+test('Cairn Context uses its initialized state', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cairn-context-'));
+  const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'roaming'), LOCALAPPDATA: join(home, 'local'), XDG_CONFIG_HOME: join(home, 'config'), XDG_STATE_HOME: join(home, 'state'), XDG_CACHE_HOME: join(home, 'cache') };
+  try {
+    execFileSync(process.execPath, [bin, 'context', 'init'], { env });
+    const result = JSON.parse(execFileSync(process.execPath, [bin, 'context', 'doctor', '--json'], { env, encoding: 'utf8' }));
+    assert.equal(result.ok, true);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a query runs directly after cairn context', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cairn-query-'));
+  const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'roaming'), LOCALAPPDATA: join(home, 'local'), XDG_CONFIG_HOME: join(home, 'config'), XDG_STATE_HOME: join(home, 'state'), XDG_CACHE_HOME: join(home, 'cache') };
+  try {
+    execFileSync('git', ['init', '-q', home]);
+    writeFileSync(join(home, 'example.js'), 'export function needleExample() { return 42; }\nexport function doctor() {}\n');
+    execFileSync(process.execPath, [bin, 'context', 'repos', 'register', home], { env, cwd: home });
+    const output = execFileSync(process.execPath, [bin, 'context', 'needleExample', '--json'], { env, cwd: home, encoding: 'utf8' });
+    const result = JSON.parse(output);
+    assert.equal(result.ok, true);
+    assert.equal(result.command, 'context');
+    assert.match(output, /needleExample/);
+    const reserved = JSON.parse(execFileSync(process.execPath, [bin, 'context', '--', 'doctor', '--json'], { env, cwd: home, encoding: 'utf8' }));
+    assert.equal(reserved.command, 'context');
+    assert.equal(reserved.data.answer.definition.symbol, 'doctor');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});

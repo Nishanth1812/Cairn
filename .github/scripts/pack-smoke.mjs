@@ -26,7 +26,7 @@ try {
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   const dryRun = JSON.parse(run(npm, ['pack', '--dry-run', '--json'], { quiet: true }));
   const files = dryRun[0].files.map(({ path }) => path);
-  const required = ['LICENSE', 'bin/cairn.mjs', 'dist/waymark.js'];
+  const required = ['LICENSE', 'README.md', 'docs/optimize.md', 'bin/cairn.mjs', 'dist/context.js', 'dist/optimize.js'];
   const forbidden = files.filter((path) => /^(?:\.claude\/|\.mcp\.json$|tests\/|\.env(?:\.|$))/.test(path));
   if (required.some((path) => !files.includes(path)) || forbidden.length) throw new Error(`Unexpected npm pack contents: missing ${required.filter((path) => !files.includes(path)).join(', ')}; forbidden ${forbidden.join(', ')}`);
   process.stdout.write(`Dry-run package contents: ${files.length} files; required files present; no local harness config, tests, or env files.\n`);
@@ -35,11 +35,22 @@ try {
   run(npm, ['install', '--prefix', prefix, tarball]);
 
   const bin = join(prefix, 'node_modules', '.bin', process.platform === 'win32' ? 'cairn.cmd' : 'cairn');
-  const invoke = (args) => run(bin, ['waymark', ...args], { cwd: temp });
+  const invoke = (args) => run(bin, ['context', ...args], { cwd: temp });
+  const invokeOptimize = (args, options = {}) => spawnSync(bin, ['optimize', ...args], {
+    cwd: temp, env: { ...env, ...options.env }, encoding: 'utf8', shell: process.platform === 'win32',
+  });
   invoke(['--version']);
   invoke(['--help']);
   invoke(['init']);
   invoke(['doctor']);
+
+  const coverage = invokeOptimize(['coverage', '--json', '--home', home]);
+  if (coverage.status !== 0) throw new Error(`Packaged optimize coverage failed: ${coverage.stderr}`);
+  const coverageData = JSON.parse(coverage.stdout).data;
+  if (coverageData.hosts.map((host) => host.id).join(',') !== 'claude-code,codex,opencode') throw new Error('Packaged optimize coverage is missing a supported host');
+  const consent = invokeOptimize(['audit', '--host', 'codex', '--home', home, '--json']);
+  if (consent.status !== 3 || JSON.parse(consent.stdout).status !== 'missing_resource') throw new Error('Packaged optimize audit did not fail safely without consent');
+  process.stdout.write('Packaged optimize bundle runs coverage and refuses audit without consent.\n');
 
   for (const path of ['.claude', '.codex', join('.config', 'opencode')]) await mkdir(join(home, path), { recursive: true });
   const instructions = [join(home, '.claude', 'CLAUDE.md'), join(home, '.codex', 'AGENTS.md'), join(home, '.config', 'opencode', 'AGENTS.md')];
