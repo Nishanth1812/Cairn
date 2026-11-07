@@ -159,6 +159,37 @@ test('audit requires consent and reads nothing before it', () => {
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
+test('session listing requires consent and exposes IDs without transcript contents', () => {
+  const home = writeHome();
+  try {
+    for (const args of [['--session-id', 'session-a'], ['--recent']]) {
+      const unsupported = optimize(['sessions', ...args]);
+      assert.equal(unsupported.status, 2);
+      assert.match(unsupported.stderr, /Unknown flag/);
+    }
+
+    const refused = optimize(['sessions', '--home', home]);
+    assert.equal(refused.status, 3);
+    assert.match(refused.stderr, /requires consent/);
+    assert.equal(refused.stdout, '');
+
+    const run = optimize(['sessions', '--consent', '--json', '--home', home, '--sessions', '2']);
+    assert.equal(run.status, 0, run.stderr);
+    const output = JSON.parse(run.stdout);
+    assert.equal(output.command, 'optimize sessions');
+    assert.equal(output.data.total, 4);
+    assert.equal(output.data.listed, 2);
+    assert.equal(output.data.truncated, true);
+    assert.equal(output.data.liveness, 'unknown');
+    assert.ok(output.data.sessions.every((session) => session.sessionId && session.project));
+    assert.ok(!run.stdout.includes(CANARY));
+
+    const project = optimize(['sessions', '--consent', '--json', '--home', home, '--project', 'H--Personal-Projects-demoA']);
+    assert.equal(project.status, 0, project.stderr);
+    assert.deepEqual(JSON.parse(project.stdout).data.sessions.map((session) => session.sessionId), ['session-a', 'session-b']);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
 test('audit reports observed opportunities with evidence, keeps estimates separate, prints no content', () => {
   const home = writeHome();
   const before = snapshot(home);

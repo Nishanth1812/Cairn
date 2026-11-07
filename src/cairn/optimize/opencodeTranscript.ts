@@ -1,10 +1,10 @@
 // Reader for local OpenCode session data in its current SQLite format. Read-only: a quiet
 // database is opened immutable; a live one is opened read-only only long enough to make a
-// private SQLite backup, which is then read-only. Neither path writes beside the source. When a live
-// journal/WAL sidecar is present, a consistent point-in-time snapshot is taken with
-// SQLite's online backup API into a private temporary snapshot directory (including
-// committed WAL content) and the snapshot is opened instead; the source is never
-// checkpointed, written or deleted. Only the fields the
+// private SQLite backup, which is then read-only. A live journal/WAL sidecar
+// uses SQLite's online backup API to make a consistent point-in-time snapshot
+// (including committed WAL content) in a private temporary directory. The main
+// database and WAL are not changed; SQLite may create or update transient
+// reader marks in the source -shm file. Only the fields the
 // audit reports on are selected; message text, tool output and raw command strings are measured
 // (lengths, truncated hashes) and never retained or emitted. Cost, quota and subscription data
 // are never read or inferred. Unknown or incompatible shapes degrade to a DataError, and
@@ -124,7 +124,8 @@ export function opencodeDatabasePath(options: OpenCodePathOptions = {}): string 
 // reads the main file directly. With a live sidecar, a consistent point-in-time
 // snapshot is taken with SQLite's online backup API into a private temporary
 // snapshot directory (never next to the source) and the snapshot is opened
-// read-only instead: the live file is never checkpointed, written or deleted,
+// read-only instead: the main database and WAL are never checkpointed, written or deleted,
+// though SQLite may create or update transient reader marks in the source -shm file,
 // and a snapshot that cannot be taken or opened fails honestly rather than
 // reporting stale data as fresh. The backup includes committed WAL content as
 // of the backup transaction, so WAL data is visible and consistent; opening
@@ -209,7 +210,8 @@ async function openSnapshotReadOnly(databasePath: string): Promise<OpenHandle> {
     const DatabaseCtor = (await import('better-sqlite3')).default;
     // SQLite's online backup API takes a consistent point-in-time snapshot
     // of a live WAL/journal-mode database, including committed WAL content,
-    // without blocking, checkpointing, writing or deleting the source. The
+    // without checkpointing or changing the main database or WAL. SQLite may
+    // create or update transient reader marks in the source -shm file. The
     // source is opened read-only (not immutable, which would hide the WAL)
     // only as the backup source; the standalone backup is then opened
     // read-only and is immune to later source writes.
@@ -353,6 +355,8 @@ export interface OpenCodeSessionInfo {
   database: string;
   bytes: number;
   schema: OpenCodeSchema;
+  startedAt?: string;
+  endedAt?: string;
 }
 
 interface SessionRow {
@@ -717,6 +721,8 @@ export async function listOpenCodeSessions(databasePath: string): Promise<OpenCo
       database: databasePath,
       bytes,
       schema: detected.schema,
+      ...(session.startedAt ? { startedAt: session.startedAt } : {}),
+      ...(session.endedAt ? { endedAt: session.endedAt } : {}),
     }));
     verify();
     return sessions;
@@ -765,7 +771,7 @@ export interface OpenCodeDatabaseSummary {
 }
 
 export const OPENCODE_LIMITATIONS: string[] = [
-  'Read-only with a backed-up snapshot: without sidecars, the database is opened immutable read-only. With a live journal/WAL sidecar, a consistent point-in-time snapshot (including committed WAL content) is taken with SQLite\'s online backup API into a private temporary directory and opened read-only instead. The source is never checkpointed, written or deleted, and source changes after the backup do not invalidate the snapshot. The backup needs temporary space up to the database size and stops after five minutes; if it cannot finish, the audit fails rather than reporting stale data as fresh.',
+  'Read-only with a backed-up snapshot: without sidecars, the database is opened immutable read-only. With a live journal/WAL sidecar, a consistent point-in-time snapshot (including committed WAL content) is taken with SQLite\'s online backup API into a private temporary directory and opened read-only instead. The main database and WAL are never changed, checkpointed or deleted; SQLite may create or update transient reader marks in the source -shm file. Source changes after the backup do not invalidate the snapshot. The backup needs temporary space up to the database size and stops after five minutes; if it cannot finish, the audit fails rather than reporting stale data as fresh.',
   'OpenCode storage is not a documented stable API; a host version change can change table or JSON shapes, and unknown shapes degrade to fewer observations instead of a false report.',
   'Only opencode.db (or an explicit OPENCODE_DB override) is read. Release-channel databases (opencode-<channel>.db) and the frozen pre-SQLite flat-file layout are not read.',
   'Token counts are provider-reported per assistant message, summed verbatim. They say nothing measured about subscription quota or cost, and this reader never converts them into either; it does not even select cost columns. In v1, upstream overwrites a multi-step message\'s tokens on each step-finish, so output/reasoning for multi-step messages can be undercounted; v2 compaction-message tokens are excluded from assistant usage.',
@@ -794,7 +800,7 @@ export async function readOpenCodeDatabase(databasePath: string, options: { proj
     if (options.sessionId !== undefined && !listed.length) {
       throw new DataError(`No OpenCode session with ID "${options.sessionId}" was found in the selected project(s).`);
     }
-    if (listed.length > 1) {
+    if (options.sessionId !== undefined && listed.length > 1) {
       throw new DataError(`Session ID "${options.sessionId}" matches multiple OpenCode sessions; narrow the audit with --project.`);
     }
     const ordered = [...listed].sort((a, b) => (b.endedAt ?? b.startedAt ?? '').localeCompare(a.endedAt ?? a.startedAt ?? '') || a.id.localeCompare(b.id));

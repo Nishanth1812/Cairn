@@ -7,6 +7,7 @@ Status and scope: this release ships audit readers for three hosts — Claude Co
 ## What it does
 
 - `cairn optimize coverage` - per-host inventory of what session data each installed host exposes locally: observations (session transcripts, tool events, provider-reported token counts, tool output sizes), estimates (data that exists but cannot be relied on), and unavailable data (such as subscription limit status). It reads no private data - only checks that host directories exist. It also distinguishes application type and local/cloud orchestration. Codex honors `CODEX_HOME`; OpenCode honors `XDG_DATA_HOME` and `OPENCODE_DB`, and those overrides are named in the per-field detail.
+- `cairn optimize sessions --consent --host <host>` - lists exact session IDs and project names for targeting an audit. It reads only host session metadata; session liveness is unknown. OpenCode timestamps are listed when stored in its database. Output is capped at 500 sessions by default, with truncation reported.
 - `cairn optimize audit --consent --host codex|opencode|claude-code` - once consent is given, reads the selected host's local session data and reports the ranked evidence, e.g.:
 - `cairn optimize compare --baseline <report.json> --current <report.json>` - compares two audit reports supplied by the user. It reads only those JSON files and does not scan host data or save a baseline. Matching host, project and coverage allow descriptive metric deltas; mismatches show each report's observed metrics side by side and omit deltas. Capped, malformed or usage-incomplete reports are labeled partial. Optional outcomes and elapsed times are included only when supplied explicitly.
 
@@ -36,7 +37,8 @@ Host data locations (each named in the consent prompt before anything is read):
 ## Privacy and safety model
 
 - Explicit consent: the audit refuses to run without `--consent` and exactly describes which host location it would read before it does. No private data is read by `coverage` or before consent.
-- Read-only: host files are opened for reading only. The OpenCode database is opened in SQLite immutable mode; when a live journal/WAL sidecar is present, the database and its sidecars are first copied to a private temporary snapshot directory and the snapshot is opened instead, so opening never creates the database or any journal/WAL/SHM sidecar next to the source and the source is never checkpointed, written or deleted. Data read is a point-in-time snapshot - data still only in an uncheckpointed WAL is invisible, never wrong - and if the source changes during the copy or read, the audit fails rather than reporting stale data. Nothing is installed, no hooks are added, and no host file is modified. Uninstalling means removing the package; there is nothing else to reverse.
+- Session listing also requires `--consent`; it emits IDs, project names and stored timestamps only, never transcript contents. Listing does not prove a session is active.
+- Read-only: host transcript files and the OpenCode main database and WAL contents are not modified, checkpointed or deleted. With live sidecars, SQLite's read-only online backup captures a consistent point-in-time view, including committed WAL data, in a private temporary database. SQLite may create or update transient reader-lock/mark bytes in the source `-shm` sidecar while opening the live database; Cairn never writes session data or changes the WAL. The private snapshot is removed after the read, and failures report the data as unknown rather than stale. Nothing is installed and no hooks are added. Uninstalling means removing the package; there is nothing else to reverse.
 - Local only: no network calls, no uploads. Reports contain file paths, search patterns, sizes, and truncated content fingerprints - never file content or tool output content. Shell commands are reported by executable name only: arguments are dropped entirely because they can hold credentials, and pattern-matching redaction cannot recognize every secret shape. Any incidental secret that slips into the remaining text fields goes through the project's best-effort redaction, which is a best effort, not a guarantee.
 - Isolation: reads and searches are ranked per session. Nothing is proposed across sessions, because cross-session reuse is not safely serviceable without verified session identity.
 - Project scoping fails closed: `--project` must name one project (exact, or a unique suffix of the name). An ambiguous hint, the fallback `unknown` bucket, or a misspelled flag is an error rather than a wider scan.
@@ -60,6 +62,10 @@ Run `cairn optimize coverage` on your machine for the full matrix with per-field
 
 ```
 cairn optimize coverage              no consent needed; checks host directories only
+cairn optimize sessions --consent    list IDs for exact session targeting
+  --host <host>                      claude-code (default), codex or opencode
+  --project <name|dir>               list one exact project
+  --sessions <n>                     cap listing at 500 by default; truncation is reported
 cairn optimize audit --consent       local audit (Claude Code is the default host)
   --host <host>                      claude-code (default), codex or opencode
   --project <dir|name>               audit one project (default: every project; `.` means current directory)

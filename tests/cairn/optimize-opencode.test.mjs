@@ -218,7 +218,7 @@ test('v2 database: session_part tools, compaction excluded, shell command never 
   }
 });
 
-test('live WAL: a private snapshot copy is audited and the source is not mutated', async () => {
+test('unfiltered multi-session WAL audit reads committed rows and leaves main DB/WAL content unchanged', async () => {
   const dir = tempDir('cairn-oc-live-wal-');
   const dbPath = join(dir, 'opencode.db');
   // Checkpointed schema and rows in the main file, then a live writer whose
@@ -232,17 +232,15 @@ test('live WAL: a private snapshot copy is audited and the source is not mutated
   db.pragma('journal_mode = WAL');
   db.prepare('INSERT INTO session_v2 VALUES (?,?,?,?,?)').run('walonly', 'p', '/Work/Case', 3, 4);
   // Keep the writer open so committed rows remain in the live WAL.
-  const assertSourceIntact = (before) => {
+  const assertDatabaseAndWalUnchanged = (before) => {
     assert.deepEqual(readdirSync(dir).sort(), before.files);
     assert.equal(statSync(dbPath).mtimeMs, before.mtime);
     assert.equal(statSync(dbPath).size, before.size);
     assert.deepEqual(readFileSync(dbPath), before.content);
     assert.ok(existsSync(`${dbPath}-wal`));
-    assert.ok(existsSync(`${dbPath}-shm`));
     assert.deepEqual([statSync(`${dbPath}-wal`).size, statSync(`${dbPath}-wal`).mtimeMs], [before.wal.size, before.wal.mtimeMs]);
-    assert.deepEqual([statSync(`${dbPath}-shm`).size, statSync(`${dbPath}-shm`).mtimeMs], [before.shm.size, before.shm.mtimeMs]);
     assert.deepEqual(readFileSync(`${dbPath}-wal`), before.wal.content);
-    assert.deepEqual(readFileSync(`${dbPath}-shm`), before.shm.content);
+    assert.ok(existsSync(`${dbPath}-shm`));
   };
   try {
     assert.ok(existsSync(`${dbPath}-wal`));
@@ -252,21 +250,17 @@ test('live WAL: a private snapshot copy is audited and the source is not mutated
       size: statSync(dbPath).size,
       content: readFileSync(dbPath),
       wal: { size: statSync(`${dbPath}-wal`).size, mtimeMs: statSync(`${dbPath}-wal`).mtimeMs, content: readFileSync(`${dbPath}-wal`) },
-      shm: { size: statSync(`${dbPath}-shm`).size, mtimeMs: statSync(`${dbPath}-shm`).mtimeMs, content: readFileSync(`${dbPath}-shm`) },
     };
-    const summary = await oc.readOpenCodeDatabase(dbPath, { project: '/Work/Case' });
-    // The snapshot sees the checkpointed session; the WAL-only session is
-    // invisible, never wrong.
-    assert.deepEqual(summary.sessions.map((session) => session.sessionId), ['checkpt']);
-    assert.match(summary.limitations.join('\n'), /snapshot/);
-    assertSourceIntact(before);
+    const summary = await oc.readOpenCodeDatabase(dbPath);
+    assert.deepEqual(summary.sessions.map((session) => session.sessionId), ['walonly', 'checkpt']);
+    assertDatabaseAndWalUnchanged(before);
   } finally {
     db.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('transient sidecar files alongside a valid database do not block the audit and are not modified', async () => {
+test('transient sidecars do not block the audit or change main DB/WAL content', async () => {
   const dir = tempDir('cairn-oc-transient-');
   const dbPath = buildV1Database(dir);
   // Simulate a live sidecar pair left by a running process.
@@ -279,37 +273,36 @@ test('transient sidecar files alongside a valid database do not block the audit 
       size: statSync(dbPath).size,
       content: readFileSync(dbPath),
       wal: { size: statSync(`${dbPath}-wal`).size, mtimeMs: statSync(`${dbPath}-wal`).mtimeMs, content: readFileSync(`${dbPath}-wal`) },
-      shm: { size: statSync(`${dbPath}-shm`).size, mtimeMs: statSync(`${dbPath}-shm`).mtimeMs, content: readFileSync(`${dbPath}-shm`) },
     };
     const summary = await oc.readOpenCodeDatabase(dbPath);
     assert.equal(summary.schema, 'v1');
     assert.deepEqual(summary.sessions.map((session) => session.sessionId), ['ses_v1']);
     assert.equal(summary.sessions[0].toolCalls, 7);
-    // Source untouched: same listing, same sizes/mtimes/contents, same sidecars.
+    // SQLite may update transient reader marks in -shm; main DB and WAL data stay untouched.
     assert.deepEqual(readdirSync(dir).sort(), before.files);
     assert.equal(statSync(dbPath).mtimeMs, before.mtime);
     assert.equal(statSync(dbPath).size, before.size);
     assert.deepEqual(readFileSync(dbPath), before.content);
     assert.deepEqual(readFileSync(`${dbPath}-wal`), before.wal.content);
-    assert.deepEqual(readFileSync(`${dbPath}-shm`), before.shm.content);
     assert.equal(statSync(`${dbPath}-wal`).mtimeMs, before.wal.mtimeMs);
-    assert.equal(statSync(`${dbPath}-shm`).mtimeMs, before.shm.mtimeMs);
+    assert.ok(existsSync(`${dbPath}-shm`));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('a database that cannot be opened alongside a sidecar still fails honestly as DataError', async () => {
+test('a database that cannot be opened alongside a sidecar fails without changing main DB/WAL data', async () => {
   const dir = tempDir('cairn-oc-snap-fail-');
   const dbPath = join(dir, 'opencode.db');
   writeFileSync(dbPath, 'this is not sqlite', 'utf8');
   writeFileSync(`${dbPath}-wal`, 'transient wal placeholder bytes', 'utf8');
-  const before = readdirSync(dir).sort();
+  const beforeWal = readFileSync(`${dbPath}-wal`);
   try {
     await assert.rejects(() => oc.readOpenCodeDatabase(dbPath), DataError);
-    // Honest failure: no snapshot or database file was left behind.
-    assert.deepEqual(readdirSync(dir).sort(), before);
+    // SQLite may create transient -shm reader marks even though the DB is rejected.
+    assert.deepEqual(readdirSync(dir).sort().filter((file) => file !== 'opencode.db-shm'), ['opencode.db', 'opencode.db-wal']);
     assert.equal(readFileSync(dbPath, 'utf8'), 'this is not sqlite');
+    assert.deepEqual(readFileSync(`${dbPath}-wal`), beforeWal);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
