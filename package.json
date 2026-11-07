@@ -1,6 +1,6 @@
 {
   "name": "@nishanth1812/cairn",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cairn Context: a local code index for AI coding agents.",
   "type": "module",
   "repository": {
@@ -25,7 +25,7 @@
   "scripts": {
     "prebuild": "node -e \"require('node:fs').rmSync('dist-next',{recursive:true,force:true})\"",
     "build": "tsc --noEmit && rolldown -c",
-    "postbuild": "node -e \"const f=require('node:fs');try{f.renameSync('dist','dist-old')}catch{}f.renameSync('dist-next','dist');f.rmSync('dist-old',{recursive:true,force:true})\"",
+    "postbuild": "node -e \"const f=require('node:fs');f.copyFileSync('src/cairn/cli/waymark-compat.mjs','dist-next/waymark.js');try{f.renameSync('dist','dist-old')}catch{}f.renameSync('dist-next','dist');f.rmSync('dist-old',{recursive:true,force:true})\"",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/cairn",
     "test": "node --test \"tests/cairn/*.test.mjs\"",

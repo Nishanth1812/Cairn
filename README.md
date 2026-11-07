@@ -24,7 +24,7 @@ cairn doctor                                      # verify the setup
 
 Release tarballs are attached to each [GitHub release](https://github.com/Nishanth1812/Cairn/releases) (`npm i -g <tarball>`).
 
-After upgrading, run `cairn context setup` to refresh managed instructions. If you previously enabled hooks, pass the same `--hooks` or `--tool-hints` option again to update them.
+After upgrading, run `cairn context setup` to refresh managed instructions. If you previously enabled hooks, pass the same `--hooks` or `--tool-hints` option again to update them. Existing `cairn waymark` commands and installed hooks continue to work.
 
 ## Use
 

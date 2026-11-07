@@ -8,13 +8,21 @@ import { test } from 'node:test';
 const bin = resolve('bin/cairn.mjs');
 const run = (...args) => execFileSync(process.execPath, [bin, ...args], { encoding: 'utf8' });
 
-test('Cairn Context is the only code index command', () => {
+test('Cairn Context preserves the Waymark entry points', () => {
   assert.match(run('--help'), /\bcontext\s+code index/);
   const help = run('context', '--help');
   assert.match(help, /Usage: cairn context "<question>"/);
-  const oldCommand = spawnSync(process.execPath, [bin, 'waymark', '--help'], { encoding: 'utf8' });
-  assert.equal(oldCommand.status, 2);
-  assert.match(oldCommand.stderr, /unknown command "waymark"/);
+  assert.match(run('waymark', '--help'), /Usage: cairn context "<question>"/);
+  const oldBundle = execFileSync(process.execPath, [resolve('dist/waymark.js'), '--help'], { encoding: 'utf8' });
+  assert.match(oldBundle, /Usage: cairn context "<question>"/);
+  const home = mkdtempSync(join(tmpdir(), 'cairn-legacy-hook-'));
+  try {
+    const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'roaming'), LOCALAPPDATA: join(home, 'local') };
+    const hook = spawnSync(process.execPath, [resolve('dist/waymark.js'), 'hook', 'pre-tool-use'], {
+      cwd: home, env, encoding: 'utf8', input: JSON.stringify({ session_id: 'legacy', cwd: home, tool_name: 'Read', tool_input: { file_path: 'example.ts' } }),
+    });
+    assert.equal(hook.status, 0, hook.stderr);
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
 test('Cairn Context uses its initialized state', () => {
@@ -41,6 +49,9 @@ test('a query runs directly after cairn context', () => {
     assert.equal(result.ok, true);
     assert.equal(result.command, 'context');
     assert.match(output, /needleExample/);
+    const legacy = JSON.parse(execFileSync(process.execPath, [bin, 'waymark', 'context', 'needleExample', '--json'], { env, cwd: home, encoding: 'utf8' }));
+    assert.equal(legacy.ok, true);
+    assert.equal(legacy.command, 'context');
     const reserved = JSON.parse(execFileSync(process.execPath, [bin, 'context', '--', 'doctor', '--json'], { env, cwd: home, encoding: 'utf8' }));
     assert.equal(reserved.command, 'context');
     assert.equal(reserved.data.answer.definition.symbol, 'doctor');

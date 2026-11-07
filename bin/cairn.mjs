@@ -23,6 +23,6 @@ const enter = async (script, args) => {
 const [cmd, ...args] = process.argv.slice(2);
 if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') console.log(HELP);
 else if (cmd === '--version' || cmd === '-v') console.log((await import('../package.json', { with: { type: 'json' } })).default.version);
-else if (cmd === 'context') await enter(CONTEXT, args);
+else if (cmd === 'context' || cmd === 'waymark') await enter(CONTEXT, args);
 else if (cmd === 'doctor') await enter(CONTEXT, ['doctor']);
 else { console.error(`cairn: unknown command "${cmd}"\n\n${HELP}`); process.exitCode = 2; }
