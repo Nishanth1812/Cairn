@@ -30,13 +30,13 @@ export interface AuditBounds {
 export interface UsageModelTotals { sessions: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; reasoningTokens?: number }
 interface UsageRecord { id: string; usage: UsageTotals; usageByModel?: Record<string, UsageTotals> }
 
-export interface ReadRow { project: string; session: string; path: string; reads: number; identicalRepeats: number; versions: number; firstTimestamp?: string; lastTimestamp?: string }
+export interface ReadRow { project: string; session: string; path: string; reads: number; identicalRepeats: number; versions: number; readChars?: number; firstTimestamp?: string; lastTimestamp?: string }
 
 export interface SearchRow { project: string; session: string; tool: string; pattern: string; searchPath: string; calls: number; glob?: string; type?: string; include?: string }
 
 export interface AuditReport {
   host: AuditHost;
-  scope: { project: string | null };
+  scope: { project: string | null; sessionId?: string };
   bounds: AuditBounds;
   usage: {
     source: 'provider-reported-per-message-or-estimate';
@@ -51,12 +51,13 @@ export interface AuditReport {
     repeatedSearches: SearchRow[];
     largeToolOutputs: { count: number; chars: number; estimatedTokens: number; samples: { tool: string; target: string; chars: number }[] };
   };
+  byProject: Array<{ project: string; sessions: number; repeatedReads: number; identicalReReads: number; repeatedSearches: number; largeOutputs: number; largeChars: number }>;
   coverage: { id: AuditHost; label: string; reader: 'implemented' | 'not implemented'; categories: Record<string, { coverage: string; detail: string }> };
   limitations: string[];
   overhead: { elapsedMs: number };
 }
 
-export interface AuditOptions { home: string; project?: string; maxSessions?: number; host?: AuditHost; recent?: boolean }
+export interface AuditOptions { home: string; project?: string; sessionId?: string; maxSessions?: number; host?: AuditHost; recent?: boolean }
 
 const MAX_ROWS = 10;
 const estimate = (chars: number): number => Math.round(chars / 4 * 1.1);
@@ -106,6 +107,14 @@ function fileMtime(path: string): number {
   try { return statSync(path).mtimeMs; } catch { return Number.NEGATIVE_INFINITY; }
 }
 
+function selectSession<T extends { sessionId: string }>(sessions: T[], sessionId: string | undefined, host: string): T[] {
+  if (sessionId === undefined) return sessions;
+  const matches = sessions.filter((session) => session.sessionId === sessionId);
+  if (!matches.length) throw new DataError(`No ${host} session with ID "${sessionId}" was found in the selected project(s).`);
+  if (matches.length > 1) throw new DataError(`Session ID "${sessionId}" matches multiple ${host} transcripts; narrow the audit with --project.`);
+  return matches;
+}
+
 // What the aggregation needs from any host's per-session summary. Hosts differ only in how
 // they obtain these values; the ranking below is shared so it cannot drift per host.
 interface NormalizedSession {
@@ -128,6 +137,7 @@ interface NormalizedSession {
 interface BuildInput {
   host: AuditHost;
   project: string | null;
+  sessionId?: string;
   bounds: AuditBounds;
   sessions: NormalizedSession[];
   limitations: string[];
@@ -176,6 +186,13 @@ function buildReport(input: BuildInput): AuditReport {
   const usageRecordValues = new Map<string, Set<string>>();
   const conflictingUsageIds = new Set<string>();
   const largeSamples: { tool: string; target: string; chars: number }[] = [];
+  // Per-project rollup: users act per repo, so findings are grouped by project.
+  const projectTotals = new Map<string, { project: string; sessions: number; repeatedReads: number; identicalReReads: number; repeatedSearches: number; largeOutputs: number; largeChars: number }>();
+  const projectTally = (name: string): { project: string; sessions: number; repeatedReads: number; identicalReReads: number; repeatedSearches: number; largeOutputs: number; largeChars: number } => {
+    let tally = projectTotals.get(name);
+    if (!tally) { tally = { project: name, sessions: 0, repeatedReads: 0, identicalReReads: 0, repeatedSearches: 0, largeOutputs: 0, largeChars: 0 }; projectTotals.set(name, tally); }
+    return tally;
+  };
   let sessionsWithProviderUsage = 0;
   let sessionsWithoutProviderUsage = 0;
   let estimatedTokensWithoutUsage = 0;
@@ -215,15 +232,20 @@ function buildReport(input: BuildInput): AuditReport {
       estimatedTokensWithoutUsage += estimate(summary.toolResultChars);
     }
     if (!summary.usage) for (const [model, usage] of Object.entries(summary.usageByModel)) addModelUsage(modelTotals, model, usage);
+    const tally = projectTally(summary.project);
+    tally.sessions++;
     // Per-session rows, keyed so sessions stay isolated (cross-session reuse is not serviceable).
     for (const read of summary.reads) {
       const key = `${summary.project}|${summary.sessionId}|${identityKey(read.path)}`;
-      const row = reads.get(key) ?? { project: summary.project, session: summary.sessionId, path: read.path, reads: 0, identicalRepeats: 0, versions: 0, firstTimestamp: read.firstTimestamp, lastTimestamp: read.lastTimestamp };
+      const row = reads.get(key) ?? { project: summary.project, session: summary.sessionId, path: read.path, reads: 0, identicalRepeats: 0, versions: 0, readChars: 0, firstTimestamp: read.firstTimestamp, lastTimestamp: read.lastTimestamp };
       row.reads += read.reads;
       row.identicalRepeats += read.identicalRepeats;
-      row.versions = read.versions;
+      row.versions += read.versions;
+      row.readChars = (row.readChars ?? 0) + (read.readChars ?? 0);
       if (read.lastTimestamp) row.lastTimestamp = read.lastTimestamp;
       reads.set(key, row);
+      tally.repeatedReads += read.reads;
+      tally.identicalReReads += read.identicalRepeats;
     }
     for (const search of summary.searches) {
       // The identity includes the filters: the same pattern under a different glob/type/include
@@ -232,9 +254,12 @@ function buildReport(input: BuildInput): AuditReport {
       const row = searches.get(key) ?? { project: summary.project, session: summary.sessionId, tool: search.tool, pattern: search.pattern, searchPath: search.searchPath, calls: 0, ...(search.glob ? { glob: search.glob } : {}), ...(search.type ? { type: search.type } : {}), ...(search.include ? { include: search.include } : {}) };
       row.calls += search.calls;
       searches.set(key, row);
+      tally.repeatedSearches += search.calls;
     }
     aggregated.largeOutputCount += summary.largeOutputCount;
     aggregated.largeOutputChars += summary.largeOutputChars;
+    tally.largeOutputs += summary.largeOutputCount;
+    tally.largeChars += summary.largeOutputChars;
     for (const sample of summary.largeOutputs.slice(0, 2)) largeSamples.push({ tool: sample.tool, target: clipTarget(sample.target), chars: sample.chars });
   }
 
@@ -242,7 +267,10 @@ function buildReport(input: BuildInput): AuditReport {
   if (!inventory) throw new DataError('Host coverage table failed to load.');
   return {
     host: input.host,
-    scope: { project: input.project },
+    scope: {
+      project: input.project ?? (input.sessionId && input.sessions.length === 1 ? input.sessions[0]!.project : null),
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    },
     bounds: input.bounds,
     usage: {
       source: 'provider-reported-per-message-or-estimate',
@@ -266,8 +294,11 @@ function buildReport(input: BuildInput): AuditReport {
         samples: largeSamples.sort((a, b) => b.chars - a.chars).slice(0, MAX_ROWS),
       },
     },
+    byProject: [...projectTotals.values()].sort((a, b) => b.largeChars + b.identicalReReads - (a.largeChars + a.identicalReReads)),
     coverage: { id: inventory.id, label: inventory.label, reader: inventory.reader, categories: inventory.categories },
-    limitations: input.limitations,
+    limitations: input.sessionId
+      ? [...input.limitations, 'The selected session ID identifies a transcript; whether that session is still running is unknown.']
+      : input.limitations,
     overhead: { elapsedMs: Math.round((performance.now() - input.started) * 10) / 10 },
   };
 }
@@ -283,7 +314,8 @@ async function runClaudeAudit(options: AuditOptions, maxSessions: number, starte
   const sessions: NormalizedSession[] = [];
   const readFailures: { session: string; reason: string }[] = [];
 
-  const queued = listings.flatMap((listing) => listing.sessions.map((session) => ({ project: listing.project, ...session, recentTime: options.recent ? fileMtime(session.file) : undefined })));
+  const queued = selectSession(listings.flatMap((listing) => listing.sessions.map((session) => ({ project: listing.project, ...session, recentTime: options.recent ? fileMtime(session.file) : undefined }))), options.sessionId, 'Claude Code');
+  if (options.sessionId) bounds.projectsScanned = new Set(queued.map((session) => session.project)).size;
   // Largest first when the session cap is hit: the sessions most likely to hold complete
   // multi-file work are the audited ones. The cap and any skipped sessions are always reported.
   queued.sort(options.recent
@@ -326,6 +358,7 @@ async function runClaudeAudit(options: AuditOptions, maxSessions: number, starte
   return buildReport({
     host: 'claude-code',
     project: options.project ?? null,
+    sessionId: options.sessionId,
     bounds,
     sessions,
     limitations,
@@ -351,7 +384,8 @@ async function runCodexAudit(options: AuditOptions, maxSessions: number, started
   const sessions: NormalizedSession[] = [];
   const readFailures: { session: string; reason: string }[] = [];
 
-  const queued = listings.flatMap((listing) => listing.sessions.map((session) => ({ project: listing.project, ...session, recentTime: options.recent ? fileMtime(session.file) : undefined })));
+  const queued = selectSession(listings.flatMap((listing) => listing.sessions.map((session) => ({ project: listing.project, ...session, recentTime: options.recent ? fileMtime(session.file) : undefined }))), options.sessionId, 'Codex');
+  if (options.sessionId) bounds.projectsScanned = new Set(queued.map((session) => session.project)).size;
   queued.sort(options.recent
     ? (a, b) => (b.recentTime as number) - (a.recentTime as number) || a.file.localeCompare(b.file)
     : (a, b) => (b.bytes ?? 0) - (a.bytes ?? 0));
@@ -393,6 +427,7 @@ async function runCodexAudit(options: AuditOptions, maxSessions: number, started
   return buildReport({
     host: 'codex',
     project: options.project ?? null,
+    sessionId: options.sessionId,
     bounds,
     sessions,
     limitations,
@@ -404,7 +439,7 @@ async function runCodexAudit(options: AuditOptions, maxSessions: number, started
 
 async function runOpenCodeAudit(options: AuditOptions, maxSessions: number, started: number): Promise<AuditReport> {
   const database = opencodeDatabasePath({ home: options.home });
-  const summary = await readOpenCodeDatabase(database, { project: options.project, maxSessions });
+  const summary = await readOpenCodeDatabase(database, { project: options.project, sessionId: options.sessionId, maxSessions });
   if (!summary.bounds.sessionsListed) throw new DataError(`No OpenCode sessions found in ${database}. Either OpenCode has not run here, or its database lives somewhere else (XDG_DATA_HOME / OPENCODE_DB).`);
   const sessions: NormalizedSession[] = summary.sessions.map((session: OpenCodeSessionSummary) => ({
     project: session.project,
@@ -440,6 +475,7 @@ async function runOpenCodeAudit(options: AuditOptions, maxSessions: number, star
   return buildReport({
     host: 'opencode',
     project: options.project ?? null,
+    sessionId: options.sessionId,
     bounds,
     sessions,
     limitations,

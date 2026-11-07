@@ -58,6 +58,7 @@ const sessionCLines = [
 const agentLines = [
   JSON.stringify(assistant('2026-11-01T09:46:00.000Z', 'claude-agent-model', { input_tokens: 10, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }, [use('g1', 'Read', { file_path: 'D:\\work\\agent\\read.ts' })])),
   JSON.stringify(userLine('2026-11-01T09:46:10.000Z', [result('g1', 'agent transcript content (never printed)')])),
+  JSON.stringify(assistant('2026-11-01T09:47:00.000Z', '<synthetic>', { input_tokens: 1, output_tokens: 2, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }, [])),
 ].join('\n');
 
 function writeHome() {
@@ -158,6 +159,37 @@ test('audit requires consent and reads nothing before it', () => {
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
+test('session listing requires consent and exposes IDs without transcript contents', () => {
+  const home = writeHome();
+  try {
+    for (const args of [['--session-id', 'session-a'], ['--recent']]) {
+      const unsupported = optimize(['sessions', ...args]);
+      assert.equal(unsupported.status, 2);
+      assert.match(unsupported.stderr, /Unknown flag/);
+    }
+
+    const refused = optimize(['sessions', '--home', home]);
+    assert.equal(refused.status, 3);
+    assert.match(refused.stderr, /requires consent/);
+    assert.equal(refused.stdout, '');
+
+    const run = optimize(['sessions', '--consent', '--json', '--home', home, '--sessions', '2']);
+    assert.equal(run.status, 0, run.stderr);
+    const output = JSON.parse(run.stdout);
+    assert.equal(output.command, 'optimize sessions');
+    assert.equal(output.data.total, 4);
+    assert.equal(output.data.listed, 2);
+    assert.equal(output.data.truncated, true);
+    assert.equal(output.data.liveness, 'unknown');
+    assert.ok(output.data.sessions.every((session) => session.sessionId && session.project));
+    assert.ok(!run.stdout.includes(CANARY));
+
+    const project = optimize(['sessions', '--consent', '--json', '--home', home, '--project', 'H--Personal-Projects-demoA']);
+    assert.equal(project.status, 0, project.stderr);
+    assert.deepEqual(JSON.parse(project.stdout).data.sessions.map((session) => session.sessionId), ['session-a', 'session-b']);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
 test('audit reports observed opportunities with evidence, keeps estimates separate, prints no content', () => {
   const home = writeHome();
   const before = snapshot(home);
@@ -178,6 +210,8 @@ test('audit reports observed opportunities with evidence, keeps estimates separa
     assert.equal(report.usage.sessionsWithoutProviderUsage, 2);
     assert.ok(report.usage.estimatedTokensWithoutUsage > 0);
     assert.deepStrictEqual(report.usage.byModel['claude-test-model'], { sessions: 1, inputTokens: 1200, outputTokens: 300, cacheReadTokens: 500, cacheCreationTokens: 100 });
+    assert.ok(!('<synthetic>' in report.usage.byModel), 'host placeholder model is never reported verbatim as a model');
+    assert.deepStrictEqual(report.usage.byModel['synthetic (host placeholder, no provider usage)'], { sessions: 1, inputTokens: 1, outputTokens: 2, cacheReadTokens: 0, cacheCreationTokens: 0 });
     assert.match(report.usage.notes.join('\n'), /summed per model/);
 
     const read = report.opportunities.repeatedReads.find((row) => row.path.endsWith('app.ts'));
@@ -185,6 +219,10 @@ test('audit reports observed opportunities with evidence, keeps estimates separa
     assert.equal(read.reads, 3); // two identical plus one after a change
     assert.equal(read.identicalRepeats, 1); // exactly one re-read observed the same content again
     assert.equal(read.versions, 2);
+    assert.ok((read.readChars ?? 0) > 0, 'read chars are measured so the summary can estimate each row’s saving');
+    assert.ok(!read.path.includes('…'), 'read paths are actionable, never truncated behind an ellipsis');
+    const projects = report.byProject;
+    assert.equal(projects.reduce((total, project) => total + project.sessions, 0), report.bounds.sessionsScanned);
     assert.ok(!report.opportunities.repeatedReads.some((row) => row.path.includes('other.ts') || row.path.includes('single\\read.ts')));
 
     const search = report.opportunities.repeatedSearches.find((row) => row.session === 'session-a');
@@ -215,6 +253,23 @@ test('audit reports observed opportunities with evidence, keeps estimates separa
     // Read-only guarantee: session files are untouched after the audit.
     const after = snapshot(home);
     assert.deepEqual(after, before);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('session ID selects exactly one transcript and rejects unknown IDs', () => {
+  const home = writeHome();
+  try {
+    const selected = optimize(['audit', '--consent', '--json', '--home', home, '--session-id', 'session-a']);
+    assert.equal(selected.status, 0, selected.stderr);
+    const report = JSON.parse(selected.stdout).data;
+    assert.equal(report.scope.sessionId, 'session-a');
+    assert.equal(report.bounds.sessionsScanned, 1);
+    assert.equal(report.byProject.reduce((total, project) => total + project.sessions, 0), 1);
+    assert.match(report.limitations.join('\n'), /whether that session is still running is unknown/);
+
+    const missing = optimize(['audit', '--consent', '--json', '--home', home, '--session-id', 'not-a-session']);
+    assert.equal(missing.status, 3);
+    assert.match(missing.stderr, /No Claude Code session with ID "not-a-session"/);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 

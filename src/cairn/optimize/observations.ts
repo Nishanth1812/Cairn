@@ -14,6 +14,9 @@ export interface ReadObservation {
   reads: number;
   versions: number;
   identicalRepeats: number;
+  // Model-visible chars loaded across reads of this file; drives the per-row
+  // savings estimate (identical repeats are the truly avoidable share).
+  readChars?: number;
   firstTimestamp?: string;
   lastTimestamp?: string;
 }
@@ -101,6 +104,12 @@ export function identityKey(path: string): string {
 
 export function clipTarget(target: string): string {
   return target.length > TARGET_PREVIEW_CHARS ? `${target.slice(0, TARGET_PREVIEW_CHARS - 1)}…` : target;
+}
+
+// File paths in read rows are redacted but never clipped: the audit exists to name
+// the file a user should stop re-reading, and an 80-char cutoff hid it behind "…".
+export function redactPath(text: string): string {
+  return redactSafe(text);
 }
 
 export function redactAndClip(text: string): string {
