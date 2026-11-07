@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -35,6 +35,25 @@ test('Cairn Context uses its initialized state', () => {
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+test('Windows short paths resolve a registered repository', { skip: process.platform !== 'win32' }, (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'cairn-short-path-'));
+  const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'roaming'), LOCALAPPDATA: join(home, 'local'), XDG_CONFIG_HOME: join(home, 'config'), XDG_STATE_HOME: join(home, 'state'), XDG_CACHE_HOME: join(home, 'cache'), CAIRN_TEST_REPO_PATH: home };
+  try {
+    const shortPath = execFileSync('cmd.exe', ['/d', '/s', '/c', '"for %I in ("%CAIRN_TEST_REPO_PATH%") do @echo %~sI"'], { env, encoding: 'utf8', windowsVerbatimArguments: true }).trim();
+    const longPath = realpathSync.native(home);
+    assert.ok(existsSync(shortPath), `short path does not exist: ${JSON.stringify(shortPath)}`);
+    if (shortPath.toLowerCase() === longPath.toLowerCase()) { t.skip('8.3 short paths are unavailable'); return; }
+    execFileSync('git', ['init', '-q', longPath]);
+    writeFileSync(join(home, 'example.js'), 'export function needleShortPath() { return 1; }\n');
+    execFileSync(process.execPath, [bin, 'context', 'repos', 'register', longPath], { env, cwd: longPath });
+    for (const args of [['needleShortPath'], ['needleShortPath', '--repo', shortPath]]) {
+      const report = JSON.parse(execFileSync(process.execPath, [bin, 'context', ...args, '--json'], { env, cwd: shortPath, encoding: 'utf8' }));
+      assert.equal(report.ok, true);
+      assert.match(JSON.stringify(report), /needleShortPath/);
+    }
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
 test('a query runs directly after cairn context', () => {
