@@ -26,7 +26,7 @@ try {
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   const dryRun = JSON.parse(run(npm, ['pack', '--dry-run', '--json'], { quiet: true }));
   const files = dryRun[0].files.map(({ path }) => path);
-  const required = ['LICENSE', 'bin/cairn.mjs', 'dist/waymark.js'];
+  const required = ['LICENSE', 'bin/cairn.mjs', 'dist/context.js', 'dist/waymark.js'];
   const forbidden = files.filter((path) => /^(?:\.claude\/|\.mcp\.json$|tests\/|\.env(?:\.|$))/.test(path));
   if (required.some((path) => !files.includes(path)) || forbidden.length) throw new Error(`Unexpected npm pack contents: missing ${required.filter((path) => !files.includes(path)).join(', ')}; forbidden ${forbidden.join(', ')}`);
   process.stdout.write(`Dry-run package contents: ${files.length} files; required files present; no local harness config, tests, or env files.\n`);
@@ -35,9 +35,11 @@ try {
   run(npm, ['install', '--prefix', prefix, tarball]);
 
   const bin = join(prefix, 'node_modules', '.bin', process.platform === 'win32' ? 'cairn.cmd' : 'cairn');
-  const invoke = (args) => run(bin, ['waymark', ...args], { cwd: temp });
+  const invoke = (args) => run(bin, ['context', ...args], { cwd: temp });
   invoke(['--version']);
   invoke(['--help']);
+  run(bin, ['waymark', '--help'], { cwd: temp });
+  run(process.execPath, [join(prefix, 'node_modules', '@nishanth1812', 'cairn', 'dist', 'waymark.js'), '--help'], { cwd: temp });
   invoke(['init']);
   invoke(['doctor']);
 

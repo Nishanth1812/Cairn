@@ -1,0 +1,520 @@
+import { existsSync, realpathSync } from 'node:fs';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { basename, delimiter, join, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { getUserPaths } from '../../config/paths.js';
+import { loadConfig, saveConfig } from '../../config/manager.js';
+import { setupWeft, type Harness } from '../../integrations/setup.js';
+import { createTask, resumeTask, saveCheckpoint } from '../../memory/taskManager.js';
+import { checkRepoHealth, type HealthReport } from '../../health/healthChecker.js';
+import { generatePortfolioSummary } from '../../health/portfolio.js';
+import { indexRepository, IndexingInProgress } from '../../indexer/indexer.js';
+import { packContext } from '../../context/packer.js';
+import { countSearchFiles, searchChunks, searchReferences } from '../../context/search.js';
+import { rankCandidates } from '../../context/ranker.js';
+import { parseIntent, generateDefaultIntent } from '../../core/intents/intentParser.js';
+import { getGitRoot, getHeadCommit, getWorkingTreeStatus } from '../../core/gitstate/gitRunner.js';
+import { computeWorkingTreeFingerprint } from '../../core/fingerprint/hasher.js';
+import { normalizeCanonicalPath } from '../../config/paths.js';
+import { fuzzyFindRepo } from '../../core/registry/repoRegistry.js';
+import { syncClaudeInstructions, CLAUDE_CODE_GUIDELINES, installClaudeHooks, uninstallClaudeHooks } from '../../integrations/claude-code/index.js';
+import { runHookCommand } from '../hookCommand.js';
+import { syncCodexInstructions, CODEX_GUIDELINES } from '../../integrations/codex/index.js';
+import { checkInstructions } from '../../integrations/instructions.js';
+import { getStats } from '../../telemetry/stats.js';
+import { recordToolCall } from '../../telemetry/toolCalls.js';
+import { redactSafe } from '../../core/security/redactor.js';
+import { estimateTokens } from '../../core/estimate/tokenEstimator.js';
+import { migrateDevPulse } from '../../migration/devpulse/migrator.js';
+import { openDatabase, repairCorruptDatabase } from '../../storage/db.js';
+import { isStorageError, storageFailure } from '../../storage/storageErrors.js';
+import { migrate } from '../../storage/migrator.js';
+import type Database from 'better-sqlite3';
+import { checkIntegrations } from '../../integrations/doctor.js';
+import { runRetrievalBenchmark, type RetrievalQuery } from '../../bench/retrieval.js';
+import { ensureRepoOnboarded, indexWithinLimit } from '../../onboarding/auto.js';
+import { refreshIndex } from '../../indexer/refresh.js';
+import { contextAnswer, formatContext, formatExact, formatReferences, formatSearch, formatSymbols, searchRecord } from '../format.js';
+import { exactMatches, SYMBOL_KINDS, symbolsByKind } from '../../context/lookup.js';
+import { onboardWorkspace } from '../../onboarding/workspace.js';
+import { runVerification } from '../../verification/runner.js';
+import { suggestChecks } from '../../verification/suggest.js';
+import { recordVerification } from '../../memory/taskManager.js';
+import { performance } from 'node:perf_hooks';
+
+type Result = { code: number; data?: unknown; warnings?: string[]; errors?: string[]; status?: string };
+class CommandError extends Error { constructor(message: string, readonly exitCode: number) { super(message); } }
+function fail(message: string, code: number): never { throw new CommandError(message, code); }
+const paths = getUserPaths();
+const dbFile = join(paths.state, 'weft.db');
+let databaseElapsed = 0;
+
+function reportTiming(phase: string, elapsed: number): void {
+  if (process.env.CAIRN_TIMING === '1') process.stderr.write(`CAIRN_TIMING ${phase}=${elapsed.toFixed(1)}ms\n`);
+}
+
+function database(required = true): Database.Database {
+  if (required && !existsSync(dbFile)) fail('Cairn Context is not initialized. Run `cairn context init` first.', 3);
+  const started = performance.now();
+  const db = openDatabase(paths.state);
+  try { migrate(db); databaseElapsed = performance.now() - started; } catch (error) { db.close(); throw error; }
+  return db;
+}
+
+function option(args: string[], name: string, fallback?: string): string | undefined {
+  const at = args.indexOf(name);
+  if (at < 0) return fallback;
+  const value = args[at + 1];
+  if (!value || value.startsWith('--')) fail(`${name} requires a value`, 2);
+  return value;
+}
+function positional(args: string[]): string[] {
+  const values: string[] = [];
+  const valued = new Set(['--name', '--limit', '--budget', '--scope', '--since', '--source', '--kind', '--refs', '--query', '--session', '--repo']);
+  for (let i = 0; i < args.length; i++) {
+    if (valued.has(args[i]!)) { i++; continue; }
+    if (!args[i]!.startsWith('--')) values.push(args[i]!);
+  }
+  return values;
+}
+function requireCount(value: string | undefined, label: string, fallback: number): number {
+  if (value === undefined) return fallback;
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 1) fail(`${label} must be a positive integer`, 2);
+  return number;
+}
+// Registration stores the realpath of the git root, so lookups must canonicalize the
+// same way: Windows runners report cwds under 8.3 short names (RUNNER~1\...), which
+// would never string-match the long path stored at register time.
+function canonicalize(path: string): string {
+  try { return realpathSync.native(path); } catch { return path; }
+}
+// The enclosing git checkout, so a command run from a subfolder finds its repo; falls back to the folder itself.
+function gitRootOf(dir: string): string {
+  const start = canonicalize(resolve(dir));
+  for (let current = start; ; current = resolve(current, '..')) {
+    if (existsSync(join(current, '.git'))) return current;
+    if (resolve(current, '..') === current) return start;
+  }
+}
+function repoRow(db: Database.Database, query?: string): { id: string; root_path: string; display_name: string } {
+  const root = gitRootOf(process.cwd());
+  const rows = db.prepare('SELECT id, root_path, display_name FROM repositories ORDER BY display_name').all() as Array<{ id: string; root_path: string; display_name: string }>;
+  const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+  const same = (a: string, b: string) => norm(a) === norm(b);
+  const queryPath = query ? canonicalize(resolve(query)) : undefined;
+  const match = query ? rows.find((row) => row.id === query || row.display_name.toLowerCase() === query.toLowerCase() || same(row.root_path, queryPath!))
+    : rows.find((row) => same(row.root_path, root));
+  if (match) return match;
+  if (!query && !rows.length) fail('No repositories are registered. Run `cairn context repos register` first.', 3);
+  if (!query) fail(`Current directory is not registered: ${root}. Run from inside a git repo (it is indexed on first use), from a folder that holds git repos to search them all, or register it with \`cairn context repos register\`.`, 3);
+  fail(`Repository not found: ${query}`, 3);
+}
+function allRepos(db: Database.Database) {
+  return db.prepare('SELECT id, root_path AS rootPath, display_name AS name, created_at AS registeredAt FROM repositories ORDER BY display_name').all() as Array<{ id: string; rootPath: string; name: string; registeredAt: string }>;
+}
+function duration(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const match = /^(\d+)([smhdw])$/i.exec(value);
+  if (!match) fail('--since must be a duration such as 7d or 2h', 2);
+  const factors: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+  return new Date(Date.now() - Number(match[1]) * factors[match[2]!.toLowerCase()]!).toISOString();
+}
+function isHarness(value: string | undefined): value is Harness { return ['claude-code', 'codex', 'opencode', 't3'].includes(value ?? ''); }
+function commandOnPath(name: string): boolean {
+  const extensions = process.platform === 'win32' ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';') : [''];
+  return (process.env.PATH ?? '').split(delimiter).some((dir) => extensions.some((extension) => existsSync(join(dir, `${name}${extension}`))));
+}
+
+export async function runCommand(args: string[], compactOutput = false): Promise<Result> {
+  const [group, sub, ...rest] = args;
+  validateFlags(args);
+  if (group === 'verify') {
+    const separator = args.indexOf('--'), command = separator < 0 ? '' : args.slice(separator + 1).join(' ');
+    const root = await getGitRoot(process.cwd()); if (!root) fail('Current directory is not a Git repository.', 3);
+    const db = database();
+    try {
+      const repo = repoRow(db), status = await getWorkingTreeStatus(root);
+      if (!command || args.includes('--suggest')) return { code: 0, data: await suggestChecks(root, [...status.staged, ...status.unstaged, ...status.untracked]) };
+      const taskArgs = args.slice(1, separator < 0 ? undefined : separator), taskId = option(taskArgs, '--task');
+      let task = taskId ? db.prepare('SELECT id FROM tasks WHERE id = ? AND repo_id = ?').get(taskId, repo.id) as { id: string } | undefined
+        : db.prepare("SELECT id FROM tasks WHERE repo_id = ? AND status = 'active' ORDER BY updated_at DESC LIMIT 1").get(repo.id) as { id: string } | undefined;
+      if (taskId && !task) fail(`Task not found for this repository: ${taskId}`, 3);
+      if (!task) task = createTask(db, repo.id, 'Verification');
+      const record = await runVerification(root, command);
+      if (!db.prepare('SELECT 1 FROM checkpoints WHERE task_id = ? LIMIT 1').get(task.id)) {
+        const current = await getWorkingTreeStatus(root), fingerprint = computeWorkingTreeFingerprint(current, await getHeadCommit(root) ?? '', current.branch);
+        saveCheckpoint(db, { taskId: task.id, workingTreeFingerprint: fingerprint, objective: '', status: 'active', findings: [], decisions: [], verification: [], nextAction: '' });
+      }
+      recordVerification(db, task.id, record);
+      return { code: record.exitCode, data: record };
+    } finally { db.close(); }
+  }
+  if (group === 'init') {
+    await mkdir(paths.config, { recursive: true }); await mkdir(paths.instructions, { recursive: true }); await mkdir(paths.state, { recursive: true }); await mkdir(paths.cache, { recursive: true });
+    const config = await loadConfig(); await saveConfig(config);
+    const db = database(false); db.close();
+    const intentPath = join(paths.instructions, 'intent.md');
+    if (!existsSync(intentPath)) await writeFile(intentPath, generateDefaultIntent(), 'utf8');
+    return { code: 0, data: { initialized: true, paths } };
+  }
+  if (group === 'setup') {
+    const home = process.env.HOME ?? process.env.USERPROFILE ?? process.cwd();
+    const selected = (option(args, '--harness', 'claude-code,codex,opencode') ?? '').split(',');
+    if (selected.some((value) => !['claude-code', 'codex', 'opencode', 't3'].includes(value))) fail('--harness must be claude-code,codex,opencode,or t3', 2);
+    const dryRun = args.includes('--dry-run'), uninstall = args.includes('--uninstall');
+    const data = await setupWeft({ home, harnesses: selected as Harness[], dryRun, uninstall, hooks: args.includes('--hooks'), toolHints: args.includes('--tool-hints') });
+    if (!dryRun) { const config = await loadConfig(); config.autoOnboard = !uninstall; await saveConfig(config); }
+    return { code: 0, data };
+  }
+  if (group === 'auto') {
+    const action = sub;
+    if (!['on', 'off', 'status'].includes(action ?? '')) fail('Use `cairn context auto on|off|status`.', 2);
+    const config = await loadConfig();
+    if (action !== 'status') { config.autoOnboard = action === 'on'; await saveConfig(config); }
+    return { code: 0, data: { autoOnboard: config.autoOnboard } };
+  }
+  if (group === 'doctor') {
+    if (!existsSync(dbFile) && !args.includes('--repair')) fail('Cairn Context is not initialized. Run `cairn context init` first.', 3);
+    const preflight = await repairCorruptDatabase(paths.state, args.includes('--repair'));
+    if (preflight.integrity !== 'ok' && !preflight.backup && preflight.integrity !== 'missing') {
+      const home = process.env.HOME ?? process.env.USERPROFILE ?? process.cwd();
+      const integrations = await checkIntegrations(home);
+      return { code: 6, data: { node: process.version, database: preflight.integrity, repositories: null, weftOnPath: commandOnPath('cairn'), integrations }, warnings: [`SQLite quick_check: ${preflight.integrity}`, 'Run `cairn context doctor --repair` to move the damaged database aside and create a fresh one.'] };
+    }
+    const db = database(false);
+    try {
+      const integrity = db.pragma('quick_check', { simple: true }) as string;
+      const warnings = integrity === 'ok' ? [] : [`SQLite quick_check: ${integrity}`];
+      const home = process.env.HOME ?? process.env.USERPROFILE ?? process.cwd();
+      const integrations = await checkIntegrations(home);
+      const hooksLog = await readFile(join(paths.state, 'hooks.log'), 'utf8').then(value => value.trim().slice(-500)).catch(() => '');
+      const data = { node: process.version, database: integrity, repairedFrom: preflight.backup ?? null, hookLog: hooksLog, repositories: allRepos(db).length, weftOnPath: commandOnPath('cairn'), integrations };
+      const lines = [...integrations.map((item) => `${item.id}: ${item.status}${item.detail ? ` (${item.detail})` : ''}${item.fix ? `; fix: ${item.fix}` : ''}`)];
+      if (compactOutput) return { code: warnings.length ? 6 : 0, data: lines.join('\n'), warnings };
+      return { code: warnings.length ? 6 : 0, data, warnings };
+    } finally { db.close(); }
+  }
+  if (group === 'hook') return runHookCommand(sub);
+  if (group === 'hooks') {
+    const options = { projectRoot: process.cwd(), home: process.env.HOME ?? process.env.USERPROFILE, global: args.includes('--global'), dryRun: args.includes('--dry-run') };
+    // Calling node on the real CLI path skips the npm shim (~270ms per hook on Windows); --portable keeps plain `weft`.
+    if (sub === 'install') return { code: 0, data: await installClaudeHooks({ ...options, bin: args.includes('--portable') || !process.argv[1] ? 'cairn context' : `node "${realpathSync(resolve(process.argv[1])).replace(/\\/g, '/')}"` }) };
+    if (sub === 'uninstall') return { code: 0, data: await uninstallClaudeHooks(options) };
+    fail('Use `cairn context hooks install|uninstall [--global] [--dry-run]`.', 2);
+  }
+  if (group === 'onboard') {
+    const target = positional(args.slice(1))[0] ?? process.cwd();
+    const harnesses = (option(args, '--harness', 'claude-code') ?? 'claude-code').split(',');
+    if (harnesses.some((value) => !isHarness(value))) fail('--harness must be claude-code, codex, opencode, or t3 (comma-separated)', 2);
+    const registered = await runCommand(['repos', 'register', target]);
+    const repo = registered.data as { id: string };
+    const indexed = await runCommand(['index', repo.id]);
+    const root = await getGitRoot(target); if (!root) fail(`Not a Git repository: ${target}`, 3);
+    const instructions = await Promise.all([
+      syncClaudeInstructions(root, CLAUDE_CODE_GUIDELINES), syncCodexInstructions(root, CODEX_GUIDELINES),
+    ]);
+    return { code: 0, data: { registered: registered.data, indexed: indexed.data, instructions } };
+  }
+  if (group === 'instructions') {
+    const action = sub;
+    if (action !== 'sync' && action !== 'check') fail('Use `cairn context instructions sync` or `check`.', 2);
+    const root = await getGitRoot(process.cwd()); if (!root) fail('Current directory is not a Git repository.', 3);
+    const dry = args.includes('--dry-run') || action === 'check';
+    const checks = await Promise.all([
+      action === 'check' ? checkInstructions(join(root, 'CLAUDE.md'), CLAUDE_CODE_GUIDELINES) : syncClaudeInstructions(root, CLAUDE_CODE_GUIDELINES, dry),
+      action === 'check' ? checkInstructions(join(root, 'AGENTS.md'), CODEX_GUIDELINES) : syncCodexInstructions(root, CODEX_GUIDELINES, dry),
+    ]);
+    const drift = action === 'check' ? checks.filter((item) => 'matches' in item && !item.matches).length : checks.filter((item) => 'modified' in item && item.modified).length;
+    return { code: drift ? 4 : 0, data: checks, warnings: drift ? [`${drift} instruction file(s) ${action === 'check' ? 'need synchronization' : 'would change'}.`] : [] };
+  }
+  if (group === 'repos') {
+    if (sub === 'list') { const db = database(); try { return { code: 0, data: allRepos(db) }; } finally { db.close(); } }
+    if (sub === 'register') {
+      const db = database(false);
+      try {
+        const target = positional(rest)[0] ?? process.cwd(); const gitRoot = await getGitRoot(target); if (!gitRoot) fail(`Not a Git repository: ${target}`, 3);
+        const rootPath = await normalizeCanonicalPath(gitRoot); const name = option(rest, '--name', basename(rootPath))!;
+        const registered = db.transaction(() => {
+          const existing = db.prepare('SELECT id, root_path, display_name FROM repositories WHERE lower(root_path) = lower(?)').get(rootPath) as { id: string; root_path: string; display_name: string } | undefined;
+          if (existing) return { code: 0, data: existing };
+          const conflict = db.prepare('SELECT 1 FROM repositories WHERE display_name = ?').get(name);
+          if (conflict) fail(`Repository name already registered: ${name}`, 2);
+          const id = randomUUID(); const now = new Date().toISOString();
+          db.prepare('INSERT INTO repositories (id, root_path, display_name, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)').run(id, rootPath, name, now, now);
+          return { code: 0, data: { id, rootPath, name } };
+        }).immediate();
+        return registered;
+      } finally { db.close(); }
+    }
+    if (sub === 'unregister') {
+      const name = positional(rest)[0]; if (!name) fail('Usage: cairn context repos unregister <repo>', 2);
+      const db = database(); try { const repo = repoRow(db, name); db.prepare('DELETE FROM repositories WHERE id = ?').run(repo.id); return { code: 0, data: { unregistered: repo.display_name } }; } finally { db.close(); }
+    }
+    if (sub === 'fuzzy') {
+      const query = positional(rest).join(' '); if (!query) fail('Usage: cairn context repos fuzzy <query>', 2);
+      const db = database(); try { const rows = allRepos(db); const result = fuzzyFindRepo(query, rows.map(({ name, rootPath, registeredAt }) => ({ name, rootPath, registeredAt }))); return { code: result.match ? 0 : 4, data: result, warnings: result.match ? [] : ['No unique repository match.'] }; } finally { db.close(); }
+    }
+    if (sub === 'status') {
+      const db = database(); try { const repo = repoRow(db, positional(rest)[0]); const git = await getWorkingTreeStatus(repo.root_path); const index = db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repo.id); const config = db.prepare('SELECT config_json FROM repositories WHERE id = ?').get(repo.id) as { config_json: string }; const note = (JSON.parse(config.config_json) as { weftOnboardingNote?: string }).weftOnboardingNote; return { code: 0, data: { repo, git, index, ...(note ? { onboardingNote: note } : {}) } }; } finally { db.close(); }
+    }
+    fail('Use `cairn context repos register|unregister|list|fuzzy|status`.', 2);
+  }
+  if (group === 'index') {
+    const db = database(); try { const repo = repoRow(db, positional(args.slice(1))[0]); const config = await loadConfig(); const note = await indexWithinLimit(repo.root_path, config.maxTrackedFiles, db, repo.id); return note ? { code: 0, data: { skipped: true, note } } : { code: 0, data: await indexRepository(db, repo.id, repo.root_path, { force: args.includes('--force') }) }; } finally { db.close(); }
+  }
+  if (group === 'search' || group === 'context') {
+    const refsName = option(args, '--refs');
+    if (refsName && group !== 'search') fail('--refs is available with search only.', 2);
+    const values = positional(args.slice(1));
+    if (!values.length && !refsName) fail(`Usage: cairn context ${group} <query> [repo]`, 2);
+    await mkdir(paths.state, { recursive: true }); // first use on a fresh machine needs no separate init
+    const db = database(false); try {
+      const explicitRepo = option(args, '--repo');
+      const last = values.at(-1);
+      const repoIndex = !explicitRepo && last && values.length > (refsName ? 0 : 1) && db.prepare('SELECT 1 FROM repositories WHERE display_name = ? OR id = ?').get(last, last) ? values.length - 1 : -1;
+      const repoArg = explicitRepo ?? (repoIndex < 0 ? undefined : values[repoIndex]);
+      const query = refsName ?? values.filter((_value, index) => index !== repoIndex).join(' ');
+      if (!query) fail(`Usage: cairn context ${group} <query> [repo]`, 2);
+      let repos: Array<ReturnType<typeof repoRow>>;
+      try { repos = [repoRow(db, repoArg)]; } catch (error) {
+        // An unregistered git checkout (a new clone or worktree) is registered and indexed on first use instead of failing.
+        if (repoArg) throw error;
+        const onboarding = await ensureRepoOnboarded(process.cwd(), { spawnIndex: false });
+        if ('reason' in onboarding && onboarding.reason === 'not-git') {
+          // A plain folder that holds repos (a workspace) is searched across all of them.
+          repos = (await onboardWorkspace(db, process.cwd(), { spawnIndex: false })).map((child) => repoRow(db, child.id));
+          if (!repos.length) throw error;
+        } else if ('reason' in onboarding && onboarding.reason === 'registered') {
+          // Another process completed first-use registration after this lookup's initial repoRow read.
+          repos = [repoRow(db, undefined)];
+        } else {
+          if (!onboarding.onboarded) throw error;
+          repos = [repoRow(db, undefined)];
+        }
+        const maxTrackedFiles = (await loadConfig()).maxTrackedFiles, usable: typeof repos = [], notes: string[] = [];
+        for (const candidate of repos) {
+          const indexed = db.prepare('SELECT active_generation AS generation FROM repo_index_state WHERE repo_id = ?').get(candidate.id) as { generation: number | null } | undefined;
+          const note = indexed?.generation == null ? await indexWithinLimit(candidate.root_path, maxTrackedFiles, db, candidate.id) : null;
+          if (note) notes.push(`${candidate.display_name}: ${note}`); else usable.push(candidate);
+        }
+        if (!usable.length) fail(notes.join(' '), 3);
+        repos = usable;
+      }
+      const indexingNotices: string[] = [];
+      const refreshStarted = performance.now();
+      for (const repo of repos) {
+        try { await refreshIndex(db, repo.id, repo.root_path, { reindex: true }); }
+        catch (error) {
+          if (!(error instanceof IndexingInProgress)) throw error;
+          const state = db.prepare('SELECT active_generation FROM repo_index_state WHERE repo_id = ?').get(repo.id) as { active_generation: number | null } | undefined;
+          if (state?.active_generation == null) return { code: 0, data: error.message };
+          indexingNotices.push(`Indexing ${repo.display_name} in the background; the lock wait expired, so results below use the last ready generation and may be stale. Retry shortly.`);
+        }
+      }
+      reportTiming('db_open', databaseElapsed);
+      reportTiming('refresh', performance.now() - refreshStarted);
+      const queryStarted = performance.now();
+      const multi = repos.length > 1; // a workspace: results carry the repo name as a path prefix
+      const prefixed = <T extends { path: string }>(repo: (typeof repos)[number], item: T): T => multi ? { ...item, path: `${repo.display_name}/${item.path}` } : item;
+      // Records the call for adoption, with the tokens the agent actually received.
+      // Same key format the PreToolUse hook uses ("<session_id>-<agent_id>"); the agent id is not in the env, so subagents count under their session.
+      const sessionId = process.env.CLAUDE_CODE_SESSION_ID;
+      const session = sessionId ? `${sessionId}-` : null;
+      // Tokens are counted on what the agent receives: the printed text, or the JSON payload under --json.
+      const respond = <T>(data: T, shown: string, found: Array<{ path: string }> = [], omitted = 0): Result => {
+        reportTiming('query_pack', performance.now() - queryStarted);
+        try { recordToolCall(db, { repoId: multi ? null : repos[0]!.id, tool: group, session, returnedTokens: estimateTokens(compactOutput ? shown : JSON.stringify(data)), ms: null, query: redactSafe(query), paths: multi ? undefined : [...new Set(found.map((item) => item.path))] }); }
+        catch (error) { if (isStorageError(error)) throw storageFailure(paths.state, error, 64 * 1024); /* Other telemetry failures must not interrupt the session. */ }
+        const warnings = [...indexingNotices, ...(omitted ? [`${omitted} more results omitted (raise --limit or --budget)`] : [])];
+        return { code: 0, data, ...(warnings.length ? { warnings } : {}) };
+      };
+      const limit = requireCount(option(args, '--limit'), '--limit', refsName ? 100 : 20);
+      const budget = requireCount(option(args, '--budget'), '--budget', group === 'context' ? 1000 : 1500);
+      // Every lookup mode stops at the token budget, so a broad query cannot return tens of thousands of tokens; the first item always fits.
+      const fit = <T>(items: T[], text: (item: T) => string): T[] => { let used = 0; const kept: T[] = []; for (const item of items) { used += estimateTokens(text(item)); if (kept.length && used > budget) break; kept.push(item); } return kept; };
+      const rankedHits = (count: number) => repos.flatMap((repo) => rankCandidates(searchChunks(db, repo.id, query, count), query).map((hit) => prefixed(repo, hit))).sort((a, b) => b.score - a.score);
+      if (group === 'search' && refsName) {
+        if (values.length > (repoIndex < 0 ? 0 : 1)) fail('Usage: cairn context search --refs <symbol> [repo]', 2);
+        const all = repos.flatMap((repo) => searchReferences(db, repo.id, refsName).map((hit) => prefixed(repo, hit)));
+        const shown = fit(all.slice(0, limit), (hit) => `${hit.path}:${hit.line} [${hit.referenceKind}] ${hit.groupName}`);
+        const formatted = formatReferences(shown, all.length);
+        return respond(compactOutput ? formatted : shown, formatted, shown, all.length - shown.length);
+      }
+      if (group === 'search' && args.includes('--exact')) {
+        const all = repos.flatMap((repo) => exactMatches(db, repo.id, query).map((match) => prefixed(repo, match))), shownMatches = fit(all.slice(0, requireCount(option(args, '--limit'), '--limit', 100)), (match) => formatExact([match], 1));
+        return respond(compactOutput ? formatExact(shownMatches, all.length) : shownMatches, formatExact(shownMatches, all.length), shownMatches, all.length - shownMatches.length);
+      }
+      const kind = group === 'search' ? option(args, '--kind') : undefined;
+      if (kind) {
+        if (!SYMBOL_KINDS.includes(kind)) fail(`--kind for search must be one of ${SYMBOL_KINDS.join(', ')}`, 2);
+        // The query's words narrow the list to matching names or paths; `*` lists every symbol of the kind.
+        const terms = query === '*' ? [] : (query.match(/[\p{L}\p{N}_]+/gu) ?? []);
+        const all = repos.flatMap((repo) => symbolsByKind(db, repo.id, kind, terms).map((hit) => prefixed(repo, hit))), shownHits = fit(all.slice(0, requireCount(option(args, '--limit'), '--limit', 100)), (hit) => formatSymbols([hit], 1));
+        return respond(compactOutput ? formatSymbols(shownHits, all.length) : shownHits, formatSymbols(shownHits, all.length), shownHits, all.length - shownHits.length);
+      }
+      const definitionTerms = new Set(query.toLocaleLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean));
+      let inferredKind: string | undefined;
+      if (group === 'search' && (definitionTerms.has('definition') || definitionTerms.has('definitions'))) {
+        for (const symbolKind of SYMBOL_KINDS) if (definitionTerms.has(symbolKind) || definitionTerms.has(symbolKind === 'class' ? 'classes' : `${symbolKind}s`)) { inferredKind = symbolKind; break; }
+      }
+      if (inferredKind) {
+        const terms = (query.match(/[\p{L}\p{N}_]+/gu) ?? []).filter((term) => !['class', 'classes', 'function', 'functions', 'definition', 'definitions', 'in', 'the', 'a', 'an'].includes(term.toLocaleLowerCase()));
+        const pathTerms = terms.filter((term) => /^(?:frontend|backend|app|routes?|pages?|components?)$/i.test(term));
+        const all = repos.flatMap((repo) => symbolsByKind(db, repo.id, inferredKind, terms).filter((hit) => pathTerms.every((term) => hit.path.toLocaleLowerCase().includes(term.toLocaleLowerCase()))).map((hit) => prefixed(repo, hit))), shownHits = fit(all.slice(0, requireCount(option(args, '--limit'), '--limit', 100)), (hit) => formatSymbols([hit], 1));
+        return respond(compactOutput ? formatSymbols(shownHits, all.length) : shownHits, formatSymbols(shownHits, all.length), shownHits, all.length - shownHits.length);
+      }
+      if (group === 'search') {
+        const ranked = rankedHits(limit);
+        const hits = fit(ranked.filter((hit, index) => ranked.findIndex(other => other.path === hit.path) === index).slice(0, limit), (hit) => formatSearch([hit], query));
+        const total = repos.reduce((count, repo) => count + countSearchFiles(db, repo.id, query), 0);
+        const omitted = Math.max(0, total - hits.length);
+        const formatted = `${formatSearch(hits, query)}${omitted ? `\n\n... ${omitted} more results (raise --limit or --budget)` : ''}`;
+        return respond(compactOutput ? formatted : hits.map((hit) => searchRecord(hit, query)), formatted, hits, omitted);
+      }
+      const results = rankedHits(100);
+      const contextPaths = new Set(results.filter((hit, index) => results.findIndex(other => other.path === hit.path) === index).slice(0, 2).map(hit => hit.path));
+      const contextHits = compactOutput ? results.filter(hit => contextPaths.has(hit.path)) : results;
+      const packed = packContext(contextHits, budget, query);
+      const answer = contextAnswer(packed.items, query);
+      return respond({ ...packed, answer }, formatContext(packed.items, query), packed.items, packed.omittedCount);
+    } finally { db.close(); }
+  }
+  if (group === 'task') {
+    const db = database(); try {
+      if (sub === 'start') {
+        const parts = positional(rest); const repos = allRepos(db); const last = parts.at(-1);
+        const target = last ? repos.find((repo) => repo.name.toLowerCase() === last.toLowerCase() || repo.id === last || repo.rootPath.toLowerCase() === resolve(last).toLowerCase()) : undefined;
+        const title = (target ? parts.slice(0, -1) : parts).join(' ');
+        if (!title) fail('Usage: cairn context task start <title> [repo]', 2);
+        return { code: 0, data: createTask(db, repoRow(db, target?.id).id, title) };
+      }
+      if (sub === 'resume') { const id = positional(rest)[0]; if (!id) fail('Usage: cairn context task resume <id>', 2); const task = db.prepare('SELECT repo_id FROM tasks WHERE id = ?').get(id) as { repo_id: string } | undefined; if (!task) fail(`Task not found: ${id}`, 3); const repo = repoRow(db, task.repo_id); const git = await getWorkingTreeStatus(repo.root_path); const fingerprint = computeWorkingTreeFingerprint(git, await getHeadCommit(repo.root_path) ?? '', git.branch); return { code: 0, data: resumeTask(db, id, fingerprint) }; }
+      if (sub === 'checkpoint') { const id = positional(rest)[0]; if (!id) fail('Usage: cairn context task checkpoint <id>', 2); const task = db.prepare('SELECT repo_id FROM tasks WHERE id = ?').get(id) as { repo_id: string } | undefined; if (!task) fail(`Task not found: ${id}`, 3); const repo = repoRow(db, task.repo_id); const git = await getWorkingTreeStatus(repo.root_path); const fingerprint = computeWorkingTreeFingerprint(git, await getHeadCommit(repo.root_path) ?? '', git.branch); return { code: 0, data: saveCheckpoint(db, { taskId: id, workingTreeFingerprint: fingerprint, objective: '', status: 'active', findings: [], decisions: [], verification: [], nextAction: '' }) }; }
+      fail('Use `cairn context task start|resume|checkpoint`.', 2);
+    } finally { db.close(); }
+  }
+  if (group === 'checkpoint') {
+    const id = sub; if (!id) fail('Usage: cairn context checkpoint <id>', 2);
+    const db = database(); try {
+      const task = db.prepare('SELECT repo_id FROM tasks WHERE id = ?').get(id) as { repo_id: string } | undefined;
+      if (!task) fail(`Task not found: ${id}`, 3);
+      const repo = repoRow(db, task.repo_id); const git = await getWorkingTreeStatus(repo.root_path);
+      const fingerprint = computeWorkingTreeFingerprint(git, await getHeadCommit(repo.root_path) ?? '', git.branch);
+      return { code: 0, data: saveCheckpoint(db, { taskId: id, workingTreeFingerprint: fingerprint, objective: '', status: 'active', findings: [], decisions: [], verification: [], nextAction: '' }) };
+    } finally { db.close(); }
+  }
+  if (group === 'intent') {
+    const path = join(paths.instructions, 'intent.md');
+    if (sub === 'show') { if (!existsSync(path)) fail('intent.md is missing. Run `cairn context init` first.', 3); return { code: 0, data: parseIntent(await readFile(path, 'utf8')) }; }
+    if (sub === 'edit') { await mkdir(paths.instructions, { recursive: true }); if (!existsSync(path)) await writeFile(path, generateDefaultIntent(), 'utf8'); const editor = process.env.EDITOR ?? process.env.VISUAL; if (!editor) fail('$EDITOR is not set.', 3); await new Promise<void>((resolvePromise, reject) => { const child = spawn(editor, [path], { stdio: 'inherit' }); child.once('error', reject); child.once('exit', (code: number | null) => code === 0 ? resolvePromise() : reject(new Error(`Editor exited with code ${code}`))); }); return { code: 0, data: { path } }; }
+    fail('Use `cairn context intent show|edit`.', 2);
+  }
+  if (group === 'health') { const db = database(); try { const repo = repoRow(db, positional(args.slice(1))[0]); const data = await checkRepoHealth(repo.root_path); return { code: findings(data) ? 4 : 0, data, warnings: findings(data) ? ['Health findings were reported.'] : [] }; } finally { db.close(); } }
+  if (group === 'portfolio') { const db = database(); try { const repos = allRepos(db).map((repo) => ({ name: repo.name, rootPath: repo.rootPath, registeredAt: repo.registeredAt })); const data = await generatePortfolioSummary(repos); return { code: findings(data.totals) ? 4 : 0, data }; } finally { db.close(); } }
+  if (group === 'feedback' && positional(args.slice(1))[0] === 'list' && !option(args, '--kind')) {
+    const db = database(); try {
+      const since = duration(option(args, '--since'));
+      const rows = db.prepare('SELECT f.id AS id, f.kind AS kind, f.observed_at AS at, r.display_name AS repo, f.query AS query, f.note AS note FROM lookup_feedback f LEFT JOIN repositories r ON r.id = f.repo_id WHERE (? IS NULL OR f.observed_at>=?) ORDER BY f.id DESC LIMIT ?')
+        .all(since ?? null, since ?? null, requireCount(option(args, '--limit'), '--limit', 20)) as Array<{ id: number; kind: string; at: string; repo: string | null; query: string | null; note: string }>;
+      return { code: 0, data: compactOutput ? rows.map((row) => `#${row.id} ${row.kind} ${row.at.slice(0, 10)} ${row.repo ?? '-'}\n  query: ${row.query ?? '-'}\n  ${row.note}`).join('\n\n') || 'No feedback filed.' : rows };
+    } finally { db.close(); }
+  }
+  if (group === 'feedback') {
+    // The gate reads these rows: an agent that filed verified feedback may run more lookups.
+    const note = positional(args.slice(1)).join(' ').trim(), kind = option(args, '--kind'), query = option(args, '--query'), session = option(args, '--session');
+    if (!note || !['miss', 'bad_output', 'error'].includes(kind ?? '') || !query) fail('Usage: cairn context feedback "<what went wrong>" --kind miss|bad_output|error --query "<the cairn context search you ran>" [--session <key>] [--repo <name>]', 2);
+    if (note.length < 20 || note.split(/\s+/).length < 4) fail('Feedback needs what went wrong in at least four words and 20 characters, e.g. the query and what came back.', 2); // the gate trusts feedback, so a one-word note must not unlock it
+    const db = database(); try {
+      // Feedback must answer a lookup this Claude session really ran through Cairn Context, so a made-up query cannot unlock the gate. Session keys are "<session id>-<agent id>"; lookups record "<session id>-".
+      // Without a session key (Codex has none) the search must have run in the last hour.
+      const ran = session
+        ? db.prepare("SELECT 1 FROM tool_calls WHERE tool IN ('search', 'context') AND query = ? AND session = ? LIMIT 1").get(redactSafe(query), `${session.replace(/-[^-]*$/, '')}-`)
+        : db.prepare("SELECT 1 FROM tool_calls WHERE tool IN ('search', 'context') AND query = ? AND observed_at >= ? LIMIT 1").get(redactSafe(query), new Date(Date.now() - 60 * 60 * 1000).toISOString());
+      if (!ran) fail('No Cairn Context search or context with that query ran in this session. Run cairn context search "<query>" first, then file the feedback with the same --query.', 3);
+      let repoId: string | null = null;
+      try { repoId = repoRow(db, option(args, '--repo')).id; } catch { /* Feedback is kept even when the repo is not registered. */ }
+      const row = db.prepare('INSERT INTO lookup_feedback (repo_id, session, kind, query, note, observed_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(repoId, session ?? null, kind, query === undefined ? null : redactSafe(query), redactSafe(note), new Date().toISOString());
+      return { code: 0, data: { recorded: Number(row.lastInsertRowid), kind } };
+    } finally { db.close(); }
+  }
+  if (group === 'stats') {
+    const db = database(); try {
+      const stats = getStats(db, duration(option(args, '--since')));
+      return { code: 0, data: compactOutput
+        ? `Adoption: ${stats.adoption.percent == null ? 'incomplete (native sweep counts require --tool-hints)' : `${stats.adoption.percent}%`} of observed lookups through Cairn Context (${stats.adoption.weftCalls} search/context, ${stats.adoption.nativeCalls ?? 'unavailable'} Grep/Glob/Bash search/whole-file Read)
+Cairn Context returned: ${stats.toolTokens.returned} tokens
+Prompt hook: ${stats.promptHook.injections} injections, ${stats.promptHook.returned} tokens
+Read a returned file after a lookup: ${stats.quality.followThroughPercent == null ? 'n/a (no lookups with recorded paths yet)' : `${stats.quality.followThroughPercent}%`}
+Fell back to a sweep after a lookup: ${stats.quality.fallbackPercent == null ? 'n/a' : `${stats.quality.fallbackPercent}%`}; feedback filed: ${stats.quality.feedback.miss} miss, ${stats.quality.feedback.bad_output} bad output, ${stats.quality.feedback.error} error`
+        : stats };
+    } finally { db.close(); }
+  }
+  if (group === 'bench' && sub === 'retrieval') {
+    const db = database();
+    try {
+      const repo = repoRow(db, option(rest, '--repo'));
+      const indexStarted = Date.now();
+      await indexRepository(db, repo.id, repo.root_path);
+      const indexMs = Date.now() - indexStarted;
+      const queryFile = join(process.cwd(), 'tests', 'cairn', 'golden', 'queries.json');
+      if (!existsSync(queryFile)) fail(`Golden query file not found: ${queryFile}`, 3);
+      const queries = (JSON.parse(await readFile(queryFile, 'utf8')) as RetrievalQuery[]).filter((query) => query.repo ? query.repo === repo.display_name : resolve(repo.root_path) === resolve(process.cwd()));
+      const report = await runRetrievalBenchmark(db, repo.id, repo.root_path, queries, join(paths.state, 'benchmarks'), indexMs);
+      return { code: 0, data: report };
+    } finally { db.close(); }
+  }
+  if (group === 'bench') fail('Use `cairn context bench retrieval [--repo <name>] [--json]`.', 2);
+  if (group === 'clean') {
+    const db = database(); try {
+      const scope = option(args, '--scope', 'indexes'); if (!['indexes', 'all'].includes(scope!)) fail('--scope must be indexes or all', 2);
+      const rows = db.prepare(`SELECT g.id FROM index_generations g LEFT JOIN repo_index_state s ON s.repo_id = g.repo_id
+        WHERE g.id != COALESCE(s.active_generation, -1) AND (g.status != 'ready' OR datetime(g.completed_at) < datetime('now', '-7 days'))
+        AND g.id NOT IN (SELECT id FROM index_generations newer WHERE newer.repo_id = g.repo_id AND newer.status = 'ready' AND newer.id != COALESCE(s.active_generation, -1) ORDER BY newer.id DESC LIMIT 1)`).all() as Array<{ id: number }>;
+      const oldTelemetry = scope === 'all' ? (db.prepare("SELECT (SELECT COUNT(*) FROM tool_calls WHERE datetime(observed_at) < datetime('now', '-90 days')) + (SELECT COUNT(*) FROM usage_events WHERE datetime(observed_at) < datetime('now', '-90 days')) AS count").get() as { count: number }).count : 0;
+      const dryRun = args.includes('--dry-run');
+      if (!dryRun && !args.includes('--yes')) fail('Confirmation required; rerun with --yes.', 5);
+      if (!dryRun) {
+        const del = db.prepare('DELETE FROM index_generations WHERE id = ?');
+        db.transaction(() => {
+          for (const row of rows) del.run(row.id);
+          if (scope === 'all') { db.prepare("DELETE FROM tool_calls WHERE datetime(observed_at) < datetime('now', '-90 days')").run(); db.prepare("DELETE FROM usage_events WHERE datetime(observed_at) < datetime('now', '-90 days')").run(); }
+        })();
+        db.exec('VACUUM');
+      }
+      return { code: 0, data: { removed: dryRun ? 0 : rows.length + oldTelemetry, planned: rows.length + oldTelemetry, dryRun } };
+    } finally { db.close(); }
+  }
+  if (group === 'migrate' && sub === 'devpulse') {
+    const source = option(args, '--source') ?? process.env.DEVPULSE_CONFIG ?? join(process.env.HOME ?? process.env.USERPROFILE ?? process.cwd(), '.devpulse');
+    const sourceDir = basename(source).toLowerCase() === 'config.toml' ? resolve(source, '..') : source;
+    if (!existsSync(sourceDir)) fail(`DevPulse source not found: ${sourceDir}`, 3);
+    const data = await migrateDevPulse({ sourcePath: source, dryRun: args.includes('--dry-run') });
+    return { code: data.warnings.length ? 4 : 0, data, warnings: data.warnings };
+  }
+  fail(`Unknown command: ${group ?? ''}`, 2);
+}
+
+const VALUE_FLAGS = new Set(['--name', '--limit', '--budget', '--scope', '--since', '--source', '--suite', '--harness', '--repo', '--tasks', '--repeat', '--task', '--kind', '--refs', '--query', '--session']);
+export const KNOWN_FLAGS = new Set([...VALUE_FLAGS, '--force', '--repair', '--dry-run', '--keep-data', '--interactive', '--yes', '--global', '--suggest', '--uninstall', '--portable', '--exact', '--tool-hints', '--hooks']);
+
+function validateFlags(args: string[]): void {
+  const valueFlags = VALUE_FLAGS;
+  const known = KNOWN_FLAGS;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === '--') break;
+    if (!arg.startsWith('--')) continue;
+    if (!known.has(arg)) fail(`Unknown option: ${arg}`, 2);
+    if (valueFlags.has(arg) && (!args[i + 1] || args[i + 1]!.startsWith('--'))) fail(`${arg} requires a value`, 2);
+  }
+}
+
+function findings(value: HealthReport | { unmergedBranches: number; staleBranches: number; todoCount: number; dirtyFilesCount: number }): number {
+  const report = value as HealthReport;
+  if (Array.isArray(report.unmergedBranches)) return Number(report.unmergedBranches.length + report.staleBranches.length + report.todoCount + report.dirtyFilesCount > 0);
+  const totals = value as { unmergedBranches: number; staleBranches: number; todoCount: number; dirtyFilesCount: number };
+  return Number(totals.unmergedBranches + totals.staleBranches + totals.todoCount + totals.dirtyFilesCount > 0);
+}

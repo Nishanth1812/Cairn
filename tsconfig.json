@@ -18,6 +18,6 @@
     "noUncheckedIndexedAccess": true,
     "isolatedModules": true
   },
-  "include": ["src/waymark/**/*"],
+  "include": ["src/cairn/**/*"],
   "exclude": ["node_modules", "dist"]
 }

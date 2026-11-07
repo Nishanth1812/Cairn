@@ -1,7 +1,7 @@
 {
   "name": "@nishanth1812/cairn",
-  "version": "0.1.0",
-  "description": "Cairn: Waymark, a code index for AI coding agents, as one command.",
+  "version": "0.1.1",
+  "description": "Cairn Context: a local code index for AI coding agents.",
   "type": "module",
   "repository": {
     "type": "git",
@@ -25,10 +25,10 @@
   "scripts": {
     "prebuild": "node -e \"require('node:fs').rmSync('dist-next',{recursive:true,force:true})\"",
     "build": "tsc --noEmit && rolldown -c",
-    "postbuild": "node -e \"const f=require('node:fs');try{f.renameSync('dist','dist-old')}catch{}f.renameSync('dist-next','dist');f.rmSync('dist-old',{recursive:true,force:true})\"",
+    "postbuild": "node -e \"const f=require('node:fs');f.copyFileSync('src/cairn/cli/waymark-compat.mjs','dist-next/waymark.js');try{f.renameSync('dist','dist-old')}catch{}f.renameSync('dist-next','dist');f.rmSync('dist-old',{recursive:true,force:true})\"",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src/waymark",
-    "test": "node --test \"tests/waymark/*.test.mjs\"",
+    "lint": "eslint src/cairn",
+    "test": "node --test \"tests/cairn/*.test.mjs\"",
     "check": "npm run lint && npm run typecheck && npm run build && npm test",
     "prepublishOnly": "npm run check"
   },
@@ -43,15 +43,15 @@
   ],
   "license": "GPL-3.0-only",
   "dependencies": {
-    "better-sqlite3": "^12.11.1"
+    "better-sqlite3": "^13.0.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^22.13.4",
+    "@types/node": "^24.0.0",
     "eslint": "^10.13.0",
-    "rolldown": "^1.2.14",
-    "typescript": "^5.7.3",
-    "typescript-eslint": "^8.71.2"
+    "rolldown": "^1.2.16",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.1"
   },
   "engines": {
     "node": ">=24"
