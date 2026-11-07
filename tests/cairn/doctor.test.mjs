@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, before, test } from 'node:test';
 
-const BIN = resolve('dist/waymark.js');
-const home = mkdtempSync(join(tmpdir(), 'waymark-home-'));
+const BIN = resolve('dist/context.js');
+const home = mkdtempSync(join(tmpdir(), 'cairn-home-'));
 const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'r'), LOCALAPPDATA: join(home, 'l'), XDG_CONFIG_HOME: join(home, 'c'), XDG_STATE_HOME: join(home, 's'), XDG_CACHE_HOME: join(home, 'k') };
 const doctor = () => execFileSync('node', ['--no-warnings', BIN, 'doctor'], { env, encoding: 'utf8' });
 

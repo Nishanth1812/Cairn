@@ -32,7 +32,7 @@ function invoke(repo, home, command, timed = false) {
   for (const key of ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME']) mkdirSync(env[key], { recursive: true });
   const preload = timed ? ['--import', pathToFileURL(join(root, 'tools', 'lookup-timing-preload.mjs')).href] : [];
   const started = performance.now();
-  const result = spawnSync(process.execPath, [...preload, cli, 'waymark', ...command], { cwd: repo, env, encoding: 'utf8', windowsHide: true });
+  const result = spawnSync(process.execPath, [...preload, cli, 'context', ...command], { cwd: repo, env, encoding: 'utf8', windowsHide: true });
   const elapsed = performance.now() - started;
   if (result.error || result.status !== 0) throw new Error(`${command.join(' ')} failed: ${result.stderr || result.error || result.status}`);
   const phases = Object.fromEntries([...result.stderr.matchAll(/^CAIRN_TIMING ([a-z_]+)=([\d.]+)ms$/gm)].map((match) => [match[1], Number(match[2])]));

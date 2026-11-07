@@ -6,11 +6,11 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, before, test } from 'node:test';
 
-const BIN = resolve('dist/waymark.js');
+const BIN = resolve('dist/context.js');
 const base = resolve('.test-tmp'); // inside the checkout: the system temp dir is a protected path for auto-onboarding
 mkdirSync(base, { recursive: true });
 const repo = mkdtempSync(join(base, 'repo-'));
-const home = mkdtempSync(join(tmpdir(), 'waymark-home-'));
+const home = mkdtempSync(join(tmpdir(), 'cairn-home-'));
 const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'r'), LOCALAPPDATA: join(home, 'l'), XDG_CONFIG_HOME: join(home, 'c'), XDG_STATE_HOME: join(home, 's'), XDG_CACHE_HOME: join(home, 'k') };
 delete env.CLAUDE_CODE_SESSION_ID; // a live session's id would leak into the CLI's lookup records
 const cli = (...args) => JSON.parse(execFileSync('node', ['--no-warnings', BIN, ...args, '--json'], { cwd: repo, env, encoding: 'utf8' })).data;
@@ -50,13 +50,13 @@ test('repeated sweeps never block unrelated tools', () => {
   assert.equal(denied(edit(session)), false);
 });
 
-test('Waymark and chained Bash commands remain allowed', () => {
+test('Cairn Context and chained Bash commands remain allowed', () => {
   const session = 'block-b';
   assert.equal(denied(bash(session, 'cairn context search "computeInvoiceTotal"')), false);
   assert.equal(denied(bash(session, 'cairn context search "x" && echo done')), false);
 });
 
-test('feedback must cite a query Waymark ran in this session', () => {
+test('feedback must cite a query Cairn Context ran in this session', () => {
   cliAs('block-other', 'search', 'computeInvoiceTotal'); // the query ran in another session
   assert.throws(
     () => cli('feedback', 'the search missed the invoice code', '--kind', 'miss', '--session', 'block-c-', '--query', 'computeInvoiceTotal'),
@@ -78,7 +78,7 @@ test('image reads are not lookups and do not spend the allowance', () => {
   for (let attempt = 0; attempt < 5; attempt++) assert.equal(denied(read(session, join(repo, 'src', 'diagram.png'))), false);
 });
 
-test('a Waymark search from a subfolder of the repo works', () => {
+test('a Cairn Context search from a subfolder of the repo works', () => {
   const out = JSON.parse(execFileSync('node', ['--no-warnings', BIN, 'search', 'computeInvoiceTotal', '--json'], { cwd: join(repo, 'src'), env, encoding: 'utf8' }));
   assert.equal(out.ok, true);
 });

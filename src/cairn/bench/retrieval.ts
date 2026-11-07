@@ -22,7 +22,7 @@ function baseline(files: Awaited<ReturnType<typeof walkRepository>>, query: stri
 }
 
 export async function runRetrievalBenchmark(db: Database.Database, repoId: string, root: string, queries: RetrievalQuery[], outputDir: string, indexMs?: number) {
-  const queryFixture = 'tests/waymark/golden/queries.json';
+  const queryFixture = 'tests/cairn/golden/queries.json';
   const corpus = (await walkRepository(root)).filter((file) => file.path !== queryFixture);
   const rows: Array<{ query: string; split: 'tuning' | 'heldout'; expectedTop3: string[]; baselineTokens: number; weftTokens: number; ratio: number | null; hitAt1: boolean; hitAt3: boolean; hitAt5: boolean; baselineFiles: string[]; weftFiles: string[] }> = [];
   for (const entry of queries) {

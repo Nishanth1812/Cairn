@@ -1,8 +1,8 @@
 import type Database from 'better-sqlite3';
 
-// Tool names as recorded: the Waymark CLI commands, and the native tools the PreToolUse hook sees.
+// Tool names as recorded: the Cairn Context CLI commands, and the native tools the PreToolUse hook sees.
 const WEFT_TOOLS = ['search', 'context'];
-// Only sweeps count against adoption: a ranged Read after a Waymark search is the intended flow, not a miss.
+// Only sweeps count against adoption: a ranged Read after a Cairn Context search is the intended flow, not a miss.
 const NATIVE_TOOLS = ['Read-whole', 'Grep', 'Glob', 'Bash-search'];
 
 export function getStats(db: Database.Database, since?: string) {
@@ -25,10 +25,10 @@ export function getStats(db: Database.Database, since?: string) {
 
 const SWEEPS = NATIVE_TOOLS.map((tool) => `'${tool}'`).join(',');
 
-/** Did Waymark answer, or did the agent fall back? Everything comes from rows already written; nothing is estimated. */
+/** Did Cairn Context answer, or did the agent fall back? Everything comes from rows already written; nothing is estimated. */
 function qualityStats(db: Database.Database, since?: string) {
   const s = since ?? null;
-  // A lookup "fell back" when the same session ran a sweep after it and before its next Waymark lookup.
+  // A lookup "fell back" when the same session ran a sweep after it and before its next Cairn Context lookup.
   const fallback = db.prepare(`SELECT COUNT(*) AS lookups, COALESCE(SUM(EXISTS(
       SELECT 1 FROM tool_calls n WHERE n.session = t.session AND n.tool IN (${SWEEPS}) AND n.id > t.id
         AND n.id < COALESCE((SELECT MIN(w.id) FROM tool_calls w WHERE w.session = t.session AND w.tool IN ('search','context') AND w.id > t.id), 9223372036854775807))), 0) AS fellBack
