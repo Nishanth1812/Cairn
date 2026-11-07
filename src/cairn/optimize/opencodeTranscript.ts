@@ -1,9 +1,10 @@
-// Reader for local OpenCode session data in its current SQLite format. Read-only: the database
-// is opened with better-sqlite3 in read-only, immutable mode (see openReadOnly) so opening it
-// never creates the database or any journal/WAL/SHM sidecar next to it. When a live
-// journal/WAL sidecar is present, the database and its sidecars are first copied to a private
-// temporary snapshot directory and the snapshot is opened instead; the source is never read
-// directly, checkpointed, written or deleted. Only the fields the
+// Reader for local OpenCode session data in its current SQLite format. Read-only: a quiet
+// database is opened immutable; a live one is opened read-only only long enough to make a
+// private SQLite backup, which is then read-only. Neither path writes beside the source. When a live
+// journal/WAL sidecar is present, a consistent point-in-time snapshot is taken with
+// SQLite's online backup API into a private temporary snapshot directory (including
+// committed WAL content) and the snapshot is opened instead; the source is never
+// checkpointed, written or deleted. Only the fields the
 // audit reports on are selected; message text, tool output and raw command strings are measured
 // (lengths, truncated hashes) and never retained or emitted. Cost, quota and subscription data
 // are never read or inferred. Unknown or incompatible shapes degrade to a DataError, and
@@ -37,9 +38,10 @@
 // The pre-SQLite flat-file layout (storage/session|message|part JSON files) is intentionally
 // not read: it is frozen at migration time and has no verified reader here, so sessions that
 // exist only there are reported as unavailable, never as zero.
-import { copyFileSync, existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
 import type Database from 'better-sqlite3';
 import { DataError } from './errors.js';
@@ -119,22 +121,29 @@ export function opencodeDatabasePath(options: OpenCodePathOptions = {}): string 
 
 // ---------------------------------------------------------------------------
 // Read-only opening. Without sidecars, a file: URI with mode=ro&immutable=1
-// reads the main file directly. With a live sidecar, the database and any
-// existing sidecars are copied to a private temporary snapshot directory
-// (never next to the source) and the snapshot is opened read-only instead:
-// the live file is never read, checkpointed, written or deleted, and a
-// snapshot that cannot be taken or opened fails honestly rather than
-// reporting stale data as fresh. In both paths immutable mode reads only
-// the main file, so data still only in an uncheckpointed WAL is invisible.
+// reads the main file directly. With a live sidecar, a consistent point-in-time
+// snapshot is taken with SQLite's online backup API into a private temporary
+// snapshot directory (never next to the source) and the snapshot is opened
+// read-only instead: the live file is never checkpointed, written or deleted,
+// and a snapshot that cannot be taken or opened fails honestly rather than
+// reporting stale data as fresh. The backup includes committed WAL content as
+// of the backup transaction, so WAL data is visible and consistent; opening
+// the source as immutable would hide that WAL, so the source is opened
+// read-only (not immutable) only for the backup, and the standalone snapshot
+// is opened immutable read-only. Source changes after the backup are expected
+// for a live database and do not invalidate the snapshot.
 // ---------------------------------------------------------------------------
 
 const SIDECAR_SUFFIXES = ['-wal', '-shm', '-journal'] as const;
 
 interface OpenHandle {
   db: Db;
+  bytes: number;
   close: () => void;
   verify: () => void;
 }
+
+const SNAPSHOT_TIMEOUT_MS = 5 * 60 * 1000;
 
 interface FileStamp {
   size: number;
@@ -169,10 +178,13 @@ async function openReadOnly(databasePath: string): Promise<OpenHandle> {
     const db = new DatabaseCtor(uri, { readonly: true, fileMustExist: true });
     if (SIDECAR_SUFFIXES.some((suffix) => existsSync(`${databasePath}${suffix}`))) {
       db.close();
-      throw new DataError(`OpenCode database at ${databasePath} changed while opening; a fresh consistent read is unavailable and its sessions are excluded as unknown.`);
+      // A live sidecar appeared after we checked; fall back to a backed-up
+      // snapshot rather than failing or reading a torn immutable file.
+      return openSnapshotReadOnly(databasePath);
     }
     return {
       db,
+      bytes: initial.size,
       close: () => db.close(),
       verify: () => {
         const current = stampOf(databasePath);
@@ -188,30 +200,44 @@ async function openReadOnly(databasePath: string): Promise<OpenHandle> {
 }
 
 async function openSnapshotReadOnly(databasePath: string): Promise<OpenHandle> {
-  const sourceStamp = stampOf(databasePath);
-  const sourceSidecarStamps = new Map<string, FileStamp>(
-    SIDECAR_SUFFIXES.filter((suffix) => existsSync(`${databasePath}${suffix}`)).map((suffix) => [suffix, stampOf(`${databasePath}${suffix}`)]),
-  );
   let snapshotDir: string | undefined;
+  let source: Db | undefined;
+  let phase = 'prepare the private snapshot';
   try {
     snapshotDir = mkdtempSync(join(tmpdir(), 'cairn-opencode-snap-'));
     const snapshotPath = join(snapshotDir, 'opencode.db');
-    copyFileSync(databasePath, snapshotPath);
-    for (const suffix of sourceSidecarStamps.keys()) copyFileSync(`${databasePath}${suffix}`, `${snapshotPath}${suffix}`);
-    // The source must not change while it is being copied: a torn or
-    // mid-write copy is not a point-in-time snapshot, so stop honestly.
-    if (stampChanged(sourceStamp, stampOf(databasePath)) || [...sourceSidecarStamps].some(([suffix, before]) => stampChanged(before, stampOf(`${databasePath}${suffix}`)))) {
-      throw new DataError(`OpenCode database at ${databasePath} changed while it was being snapshotted; a fresh consistent read is unavailable and its sessions are excluded as unknown.`);
-    }
     const DatabaseCtor = (await import('better-sqlite3')).default;
-    const url = `${pathToFileURL(snapshotPath).href}?mode=ro&immutable=1`;
-    const db = new DatabaseCtor(url, { readonly: true, fileMustExist: true });
-    if (SIDECAR_SUFFIXES.some((suffix) => !sourceSidecarStamps.has(suffix) && existsSync(`${snapshotPath}${suffix}`))) {
+    // SQLite's online backup API takes a consistent point-in-time snapshot
+    // of a live WAL/journal-mode database, including committed WAL content,
+    // without blocking, checkpointing, writing or deleting the source. The
+    // source is opened read-only (not immutable, which would hide the WAL)
+    // only as the backup source; the standalone backup is then opened
+    // read-only and is immune to later source writes.
+    phase = 'open the live database read-only';
+    source = new DatabaseCtor(databasePath, { readonly: true, fileMustExist: true });
+    source.pragma('busy_timeout = 5000');
+    const deadline = performance.now() + SNAPSHOT_TIMEOUT_MS;
+    phase = 'create the consistent SQLite backup';
+    await source.backup(snapshotPath, {
+      progress: (): number => {
+        if (performance.now() >= deadline) {
+          throw new DataError(`OpenCode database at ${databasePath} could not be snapshotted within ${SNAPSHOT_TIMEOUT_MS / 1000} seconds; its sessions are excluded as unknown.`);
+        }
+        return 100;
+      },
+    });
+    source.close();
+    source = undefined;
+    phase = 'open the private snapshot read-only';
+    const db = new DatabaseCtor(snapshotPath, { readonly: true, fileMustExist: true });
+    if (SIDECAR_SUFFIXES.some((suffix) => existsSync(`${snapshotPath}${suffix}`))) {
       db.close();
       throw new DataError(`OpenCode database snapshot for ${databasePath} could not be opened without writing next to it; its sessions are excluded as unknown.`);
     }
+    const snapshotStamp = stampOf(snapshotPath);
     return {
       db,
+      bytes: snapshotStamp.size,
       close: () => {
         try {
           db.close();
@@ -220,18 +246,18 @@ async function openSnapshotReadOnly(databasePath: string): Promise<OpenHandle> {
         }
       },
       verify: () => {
-        if (
-          stampChanged(sourceStamp, stampOf(databasePath)) ||
-          [...sourceSidecarStamps].some(([suffix, before]) => !existsSync(`${databasePath}${suffix}`) || stampChanged(before, stampOf(`${databasePath}${suffix}`)))
-        ) {
-          throw new DataError(`OpenCode database at ${databasePath} changed while it was being read; a fresh consistent read is unavailable and its sessions are excluded as unknown.`);
+        // The snapshot is private and stable; only a change to the snapshot
+        // itself (never an expected change to the live source) invalidates it.
+        if (stampChanged(snapshotStamp, stampOf(snapshotPath))) {
+          throw new DataError(`OpenCode database snapshot for ${databasePath} changed while it was being read; a fresh consistent read is unavailable and its sessions are excluded as unknown.`);
         }
       },
     };
   } catch (error) {
-    cleanupDir(snapshotDir);
+    try { source?.close(); } catch { /* Preserve the backup error and still remove the private snapshot. */ }
+    finally { cleanupDir(snapshotDir); }
     if (error instanceof DataError) throw error;
-    throw new DataError(`OpenCode database at ${databasePath} could not be snapshotted and opened in immutable read-only mode (${sqliteCode(error)}); its sessions are excluded as unknown.`);
+    throw new DataError(`OpenCode database at ${databasePath} could not ${phase} (${sqliteCode(error)}: ${error instanceof Error ? error.message : String(error)}); its sessions are excluded as unknown.`);
   }
 }
 
@@ -682,10 +708,9 @@ function readSessionWithDb(
 // ---------------------------------------------------------------------------
 
 export async function listOpenCodeSessions(databasePath: string): Promise<OpenCodeSessionInfo[]> {
-  const { db, close, verify } = await openReadOnly(databasePath);
+  const { db, bytes, close, verify } = await openReadOnly(databasePath);
   try {
     const detected = detectSchema(db, databasePath);
-    const bytes = statSync(databasePath).size;
     const sessions = listSessionRows(db, detected).map((session) => ({
       sessionId: session.id,
       project: session.project,
@@ -704,12 +729,11 @@ export async function listOpenCodeSessions(databasePath: string): Promise<OpenCo
 }
 
 export async function readOpenCodeSession(databasePath: string, sessionId: string): Promise<OpenCodeSessionSummary> {
-  const { db, close, verify } = await openReadOnly(databasePath);
+  const { db, bytes, close, verify } = await openReadOnly(databasePath);
   try {
     const detected = detectSchema(db, databasePath);
     const session = listSessionRows(db, detected).find((row) => row.id === sessionId);
     if (!session) throw new DataError(`No OpenCode session "${sessionId}" found in ${databasePath}.`);
-    const bytes = statSync(databasePath).size;
     const summary = readSessionWithDb(db, detected, databasePath, bytes, session);
     verify();
     return summary;
@@ -741,7 +765,7 @@ export interface OpenCodeDatabaseSummary {
 }
 
 export const OPENCODE_LIMITATIONS: string[] = [
-  'Read-only with snapshot copies: the database is opened in SQLite immutable read-only mode, and when a live journal/WAL sidecar is present the database and its sidecars are first copied to a private temporary snapshot directory and the snapshot is opened instead. The source is never read directly while live, checkpointed, written or deleted. Data read is a point-in-time snapshot (uncheckpointed WAL content is not visible); if the source changes during the copy or read, or the snapshot cannot be opened, the audit fails rather than reporting stale data as fresh.',
+  'Read-only with a backed-up snapshot: without sidecars, the database is opened immutable read-only. With a live journal/WAL sidecar, a consistent point-in-time snapshot (including committed WAL content) is taken with SQLite\'s online backup API into a private temporary directory and opened read-only instead. The source is never checkpointed, written or deleted, and source changes after the backup do not invalidate the snapshot. The backup needs temporary space up to the database size and stops after five minutes; if it cannot finish, the audit fails rather than reporting stale data as fresh.',
   'OpenCode storage is not a documented stable API; a host version change can change table or JSON shapes, and unknown shapes degrade to fewer observations instead of a false report.',
   'Only opencode.db (or an explicit OPENCODE_DB override) is read. Release-channel databases (opencode-<channel>.db) and the frozen pre-SQLite flat-file layout are not read.',
   'Token counts are provider-reported per assistant message, summed verbatim. They say nothing measured about subscription quota or cost, and this reader never converts them into either; it does not even select cost columns. In v1, upstream overwrites a multi-step message\'s tokens on each step-finish, so output/reasoning for multi-step messages can be undercounted; v2 compaction-message tokens are excluded from assistant usage.',
@@ -750,10 +774,9 @@ export const OPENCODE_LIMITATIONS: string[] = [
 ];
 
 export async function readOpenCodeDatabase(databasePath: string, options: { project?: string; maxSessions?: number } = {}): Promise<OpenCodeDatabaseSummary> {
-  const { db, close, verify } = await openReadOnly(databasePath);
+  const { db, bytes, close, verify } = await openReadOnly(databasePath);
   try {
     const detected = detectSchema(db, databasePath);
-    const bytes = statSync(databasePath).size;
     const allListed = listSessionRows(db, detected);
     let projects = [...new Set(allListed.map((session) => session.project))];
     if (options.project) {
@@ -788,7 +811,7 @@ export async function readOpenCodeDatabase(databasePath: string, options: { proj
     const limitations = [...OPENCODE_LIMITATIONS];
     if (listed.length > selected.length) limitations.push(`${listed.length - selected.length} matching session(s) beyond the ${maxSessions}-session cap were not read.`);
     if (skipped.length) limitations.push(`${skipped.length} session(s) could not be read and are excluded as unknown: ${skipped.map((entry) => `${entry.session} (${entry.reason})`).join('; ')}`);
-    if (malformedRows) limitations.push(`${malformedRows} message/part row(s) were unparseable and skipped; this commonly includes rows being written while the database was read.`);
+    if (malformedRows) limitations.push(`${malformedRows} message/part row(s) were unparseable and excluded from observations.`);
     verify();
     return {
       database: databasePath,
