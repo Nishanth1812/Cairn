@@ -773,7 +773,7 @@ export const OPENCODE_LIMITATIONS: string[] = [
   'Reads and searches are counted within one session only, so cross-session reuse is never claimed.',
 ];
 
-export async function readOpenCodeDatabase(databasePath: string, options: { project?: string; maxSessions?: number } = {}): Promise<OpenCodeDatabaseSummary> {
+export async function readOpenCodeDatabase(databasePath: string, options: { project?: string; sessionId?: string; maxSessions?: number } = {}): Promise<OpenCodeDatabaseSummary> {
   const { db, bytes, close, verify } = await openReadOnly(databasePath);
   try {
     const detected = detectSchema(db, databasePath);
@@ -787,7 +787,16 @@ export async function readOpenCodeDatabase(databasePath: string, options: { proj
       if (!projects.length) throw new DataError(`No OpenCode project directory matches "${options.project}". Available project directories: ${[...new Set(allListed.map((session) => session.project))].join(', ') || 'none'}`);
     }
     const selectedProjects = new Set(projects);
-    const listed = allListed.filter((session) => selectedProjects.has(session.project));
+    const projectSessions = allListed.filter((session) => selectedProjects.has(session.project));
+    const listed = options.sessionId === undefined
+      ? projectSessions
+      : projectSessions.filter((session) => session.id === options.sessionId);
+    if (options.sessionId !== undefined && !listed.length) {
+      throw new DataError(`No OpenCode session with ID "${options.sessionId}" was found in the selected project(s).`);
+    }
+    if (listed.length > 1) {
+      throw new DataError(`Session ID "${options.sessionId}" matches multiple OpenCode sessions; narrow the audit with --project.`);
+    }
     const ordered = [...listed].sort((a, b) => (b.endedAt ?? b.startedAt ?? '').localeCompare(a.endedAt ?? a.startedAt ?? '') || a.id.localeCompare(b.id));
     const maxSessions = options.maxSessions ?? Number.POSITIVE_INFINITY;
     const selected = ordered.slice(0, maxSessions);

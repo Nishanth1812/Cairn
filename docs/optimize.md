@@ -54,7 +54,7 @@ Host data locations (each named in the consent prompt before anything is read):
 | Limit/quota status | unavailable | unavailable | unavailable |
 | Instruction size | estimated | estimated | estimated |
 
-Run `cairn optimize coverage` on your machine for the full matrix with per-field detail, the detection probe used, and each host's local data root. Codex compressed (`.zst`) rollouts and archived sessions, OpenCode release-channel databases (`opencode-<channel>.db`) and the frozen pre-SQLite flat-file layout are excluded rather than guessed, and OpenCode sessions visible only in an uncheckpointed WAL are unavailable rather than zero.
+Run `cairn optimize coverage` on your machine for the full matrix with per-field detail, the detection probe used, and each host's local data root. Codex compressed (`.zst`) rollouts and archived sessions, OpenCode release-channel databases (`opencode-<channel>.db`) and the frozen pre-SQLite flat-file layout are excluded rather than guessed. Live OpenCode databases are read through a consistent backup snapshot that includes committed WAL data; in-flight uncommitted writes are outside that snapshot.
 
 ## Options and exit codes
 
@@ -63,6 +63,7 @@ cairn optimize coverage              no consent needed; checks host directories 
 cairn optimize audit --consent       local audit (Claude Code is the default host)
   --host <host>                      claude-code (default), codex or opencode
   --project <dir|name>               audit one project (default: every project; `.` means current directory)
+  --session-id <id>                  audit one exact session ID; whether it is still running is unknown
   --sessions <n>                     override the 500-session cap (largest files first by default)
   --recent                           prioritize recent files (Claude/Codex mtime estimate; OpenCode session activity)
   --home <dir>                       alternate host home (tests, alternate installs)

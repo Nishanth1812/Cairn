@@ -36,7 +36,7 @@ export interface SearchRow { project: string; session: string; tool: string; pat
 
 export interface AuditReport {
   host: AuditHost;
-  scope: { project: string | null };
+  scope: { project: string | null; sessionId?: string };
   bounds: AuditBounds;
   usage: {
     source: 'provider-reported-per-message-or-estimate';
@@ -57,7 +57,7 @@ export interface AuditReport {
   overhead: { elapsedMs: number };
 }
 
-export interface AuditOptions { home: string; project?: string; maxSessions?: number; host?: AuditHost; recent?: boolean }
+export interface AuditOptions { home: string; project?: string; sessionId?: string; maxSessions?: number; host?: AuditHost; recent?: boolean }
 
 const MAX_ROWS = 10;
 const estimate = (chars: number): number => Math.round(chars / 4 * 1.1);
@@ -107,6 +107,14 @@ function fileMtime(path: string): number {
   try { return statSync(path).mtimeMs; } catch { return Number.NEGATIVE_INFINITY; }
 }
 
+function selectSession<T extends { sessionId: string }>(sessions: T[], sessionId: string | undefined, host: string): T[] {
+  if (sessionId === undefined) return sessions;
+  const matches = sessions.filter((session) => session.sessionId === sessionId);
+  if (!matches.length) throw new DataError(`No ${host} session with ID "${sessionId}" was found in the selected project(s).`);
+  if (matches.length > 1) throw new DataError(`Session ID "${sessionId}" matches multiple ${host} transcripts; narrow the audit with --project.`);
+  return matches;
+}
+
 // What the aggregation needs from any host's per-session summary. Hosts differ only in how
 // they obtain these values; the ranking below is shared so it cannot drift per host.
 interface NormalizedSession {
@@ -129,6 +137,7 @@ interface NormalizedSession {
 interface BuildInput {
   host: AuditHost;
   project: string | null;
+  sessionId?: string;
   bounds: AuditBounds;
   sessions: NormalizedSession[];
   limitations: string[];
@@ -258,7 +267,10 @@ function buildReport(input: BuildInput): AuditReport {
   if (!inventory) throw new DataError('Host coverage table failed to load.');
   return {
     host: input.host,
-    scope: { project: input.project },
+    scope: {
+      project: input.project ?? (input.sessionId && input.sessions.length === 1 ? input.sessions[0]!.project : null),
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    },
     bounds: input.bounds,
     usage: {
       source: 'provider-reported-per-message-or-estimate',
@@ -284,7 +296,9 @@ function buildReport(input: BuildInput): AuditReport {
     },
     byProject: [...projectTotals.values()].sort((a, b) => b.largeChars + b.identicalReReads - (a.largeChars + a.identicalReReads)),
     coverage: { id: inventory.id, label: inventory.label, reader: inventory.reader, categories: inventory.categories },
-    limitations: input.limitations,
+    limitations: input.sessionId
+      ? [...input.limitations, 'The selected session ID identifies a transcript; whether that session is still running is unknown.']
+      : input.limitations,
     overhead: { elapsedMs: Math.round((performance.now() - input.started) * 10) / 10 },
   };
 }
@@ -300,7 +314,8 @@ async function runClaudeAudit(options: AuditOptions, maxSessions: number, starte
   const sessions: NormalizedSession[] = [];
   const readFailures: { session: string; reason: string }[] = [];
 
-  const queued = listings.flatMap((listing) => listing.sessions.map((session) => ({ project: listing.project, ...session, recentTime: options.recent ? fileMtime(session.file) : undefined })));
+  const queued = selectSession(listings.flatMap((listing) => listing.sessions.map((session) => ({ project: listing.project, ...session, recentTime: options.recent ? fileMtime(session.file) : undefined }))), options.sessionId, 'Claude Code');
+  if (options.sessionId) bounds.projectsScanned = new Set(queued.map((session) => session.project)).size;
   // Largest first when the session cap is hit: the sessions most likely to hold complete
   // multi-file work are the audited ones. The cap and any skipped sessions are always reported.
   queued.sort(options.recent
@@ -343,6 +358,7 @@ async function runClaudeAudit(options: AuditOptions, maxSessions: number, starte
   return buildReport({
     host: 'claude-code',
     project: options.project ?? null,
+    sessionId: options.sessionId,
     bounds,
     sessions,
     limitations,
@@ -368,7 +384,8 @@ async function runCodexAudit(options: AuditOptions, maxSessions: number, started
   const sessions: NormalizedSession[] = [];
   const readFailures: { session: string; reason: string }[] = [];
 
-  const queued = listings.flatMap((listing) => listing.sessions.map((session) => ({ project: listing.project, ...session, recentTime: options.recent ? fileMtime(session.file) : undefined })));
+  const queued = selectSession(listings.flatMap((listing) => listing.sessions.map((session) => ({ project: listing.project, ...session, recentTime: options.recent ? fileMtime(session.file) : undefined }))), options.sessionId, 'Codex');
+  if (options.sessionId) bounds.projectsScanned = new Set(queued.map((session) => session.project)).size;
   queued.sort(options.recent
     ? (a, b) => (b.recentTime as number) - (a.recentTime as number) || a.file.localeCompare(b.file)
     : (a, b) => (b.bytes ?? 0) - (a.bytes ?? 0));
@@ -410,6 +427,7 @@ async function runCodexAudit(options: AuditOptions, maxSessions: number, started
   return buildReport({
     host: 'codex',
     project: options.project ?? null,
+    sessionId: options.sessionId,
     bounds,
     sessions,
     limitations,
@@ -421,7 +439,7 @@ async function runCodexAudit(options: AuditOptions, maxSessions: number, started
 
 async function runOpenCodeAudit(options: AuditOptions, maxSessions: number, started: number): Promise<AuditReport> {
   const database = opencodeDatabasePath({ home: options.home });
-  const summary = await readOpenCodeDatabase(database, { project: options.project, maxSessions });
+  const summary = await readOpenCodeDatabase(database, { project: options.project, sessionId: options.sessionId, maxSessions });
   if (!summary.bounds.sessionsListed) throw new DataError(`No OpenCode sessions found in ${database}. Either OpenCode has not run here, or its database lives somewhere else (XDG_DATA_HOME / OPENCODE_DB).`);
   const sessions: NormalizedSession[] = summary.sessions.map((session: OpenCodeSessionSummary) => ({
     project: session.project,
@@ -457,6 +475,7 @@ async function runOpenCodeAudit(options: AuditOptions, maxSessions: number, star
   return buildReport({
     host: 'opencode',
     project: options.project ?? null,
+    sessionId: options.sessionId,
     bounds,
     sessions,
     limitations,

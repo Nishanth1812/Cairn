@@ -30,6 +30,7 @@ Audit options:
   --host <host>          which host to audit: claude-code (default), codex or opencode
   --project <dir|name>   audit one project (Claude Code directory name, Codex working
                          directory, or OpenCode project directory; default: every project)
+  --session-id <id>      audit one exact session ID; whether it is still running is unknown
   --recent              prioritize recently modified local files (mtime estimate for Claude/Codex;
                          OpenCode uses session activity metadata)
   --home <dir>           override the host home directory (for tests and alternate installs)
@@ -70,6 +71,7 @@ function summaryText(report: Awaited<ReturnType<typeof runAudit>>): string {
     `Scanned ${b.sessionsScanned} session(s) across ${b.projectsScanned} of ${b.projectsPresent} project directorie(s)${b.sessionsSkipped ? `, ${b.sessionsSkipped} skipped or beyond cap` : ''}${b.malformedLines ? `; ${b.malformedLines} malformed line(s) skipped` : ''}.`,
     `Provider-reported usage covers ${report.usage.sessionsWithProviderUsage} session(s)${report.usage.sessionsWithoutProviderUsage ? `; ${report.usage.sessionsWithoutProviderUsage} had none and are estimates only` : ''}.${report.usage.notes[0] ? '' : ''}`,
   ];
+  if (report.scope.sessionId) lines.push(`Session ${report.scope.sessionId} selected explicitly; liveness is unknown.`);
   const big = report.opportunities.largeToolOutputs;
   lines.push(`Large tool outputs: ${big.count} result(s) at 20k+ chars (${big.chars} chars, ~${big.estimatedTokens} estimated tokens — estimate, not provider-reported).`);
   if (report.opportunities.repeatedReads.length) {
@@ -115,7 +117,7 @@ export async function runOptimize(argv: string[]): Promise<number> {
   };
   // Unknown flags fail closed: a misspelled option (e.g. --projct) must never fall back to
   // scanning every project when the user asked for one project.
-  const knownFlags = new Set(['--consent', '--recent', '--project', '--home', '--sessions', '--host']);
+  const knownFlags = new Set(['--consent', '--recent', '--project', '--session-id', '--home', '--sessions', '--host']);
   const rejectUnknownFlags = (allowed: Set<string> = knownFlags): void => {
     for (let index = 0; index < flags.length; index++) {
       const flag = flags[index]!;
@@ -215,6 +217,7 @@ export async function runOptimize(argv: string[]): Promise<number> {
       }
       const rawProject = option('--project');
       const project = rawProject === '.' ? process.cwd() : rawProject;
+      const sessionId = option('--session-id');
       if (!flags.includes('--consent')) {
         const location = host === 'codex'
           ? `session rollouts under ${codexProjectsRoot(home)} (CODEX_HOME or ~/.codex/sessions)`
@@ -230,7 +233,7 @@ export async function runOptimize(argv: string[]): Promise<number> {
       if (maxSessions !== undefined && (!Number.isSafeInteger(maxSessions) || maxSessions < 1)) {
         throw new OptimizeError('--sessions requires a positive integer', 2, 'invalid_arguments');
       }
-      const report = await runAudit({ home, project, maxSessions, host, recent: flags.includes('--recent') });
+      const report = await runAudit({ home, project, sessionId, maxSessions, host, recent: flags.includes('--recent') });
       if (json) return { code: 0, data: report };
       return { code: 0, data: summaryText(report) };
     }

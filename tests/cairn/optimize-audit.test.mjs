@@ -225,6 +225,23 @@ test('audit reports observed opportunities with evidence, keeps estimates separa
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
+test('session ID selects exactly one transcript and rejects unknown IDs', () => {
+  const home = writeHome();
+  try {
+    const selected = optimize(['audit', '--consent', '--json', '--home', home, '--session-id', 'session-a']);
+    assert.equal(selected.status, 0, selected.stderr);
+    const report = JSON.parse(selected.stdout).data;
+    assert.equal(report.scope.sessionId, 'session-a');
+    assert.equal(report.bounds.sessionsScanned, 1);
+    assert.equal(report.byProject.reduce((total, project) => total + project.sessions, 0), 1);
+    assert.match(report.limitations.join('\n'), /whether that session is still running is unknown/);
+
+    const missing = optimize(['audit', '--consent', '--json', '--home', home, '--session-id', 'not-a-session']);
+    assert.equal(missing.status, 3);
+    assert.match(missing.stderr, /No Claude Code session with ID "not-a-session"/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
 test('absent and partially missing session data degrade honestly, never to zero', () => {
   const empty = mkdtempSync(join(tmpdir(), 'cairn-optimize-empty-'));
   try {
