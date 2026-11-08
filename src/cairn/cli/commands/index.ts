@@ -88,7 +88,9 @@ function requireCount(value: string | undefined, label: string, fallback: number
 // same way: Windows runners report cwds under 8.3 short names (RUNNER~1\...), which
 // would never string-match the long path stored at register time.
 function canonicalize(path: string): string {
-  try { return realpathSync(path); } catch { return path; }
+  try { return realpathSync.native(path); } catch {
+    try { return realpathSync(path); } catch { return path; }
+  }
 }
 // The enclosing git checkout, so a command run from a subfolder finds its repo; falls back to the folder itself.
 function gitRootOf(dir: string): string {

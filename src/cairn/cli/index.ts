@@ -62,7 +62,7 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = { stdout:
     : parsed.args[0] && !parsed.args[0].startsWith('-') && !COMMANDS.has(parsed.args[0]) ? ['context', ...parsed.args] : parsed.args;
   const command = commandName(args);
   let result: CliResult;
-  if (args.includes('--version') || args[0] === '--version') result = { code: 0, data: { version: '0.1.0' } };
+  if (args.includes('--version') || args[0] === '--version') result = { code: 0, data: { version: '0.2.0' } };
   else if (args.includes('--help') || args.length === 0 || args[0] === 'help') result = { code: 0, data: HELP };
   else if (args[0] === 'hook') result = await (await import('./hookCommand.js')).runHookCommand(args[1]);
   else {

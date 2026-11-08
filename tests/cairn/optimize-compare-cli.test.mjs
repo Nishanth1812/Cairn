@@ -44,6 +44,12 @@ test('compare reads two explicit reports without host consent and keeps cross-ho
     assert.equal(report.metrics.inputTokens.change, null);
     assert.equal(report.taskOutcome.baseline, 'unknown');
     assert.equal(report.taskOutcome.current, 'completed');
+    const text = invoke(['compare', '--baseline', baseline, '--current', current], dir);
+    assert.equal(text.status, 0, text.stderr);
+    assert.match(text.stdout, /Cairn Optimize comparison — incomparable/);
+    assert.match(text.stdout, /Input tokens\s+100 → 50 \(delta unavailable\)/);
+    assert.match(text.stdout, /Identical re-reads/);
+    assert.doesNotMatch(text.stdout, /^\s*\{/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

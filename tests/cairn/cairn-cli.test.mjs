@@ -47,14 +47,15 @@ test('a query runs directly after cairn context', () => {
     // A repo registered under one path spelling (realpath) and queried from a different
     // spelling of the same directory must still match (Windows runners hand cwds in
     // 8.3 short form; lookups canonicalize to the registered long path).
-    const aliasHome = join(tmpdir(), 'cairn-query-alias-');
+    const aliasHome = mkdtempSync(join(tmpdir(), 'cairn-query-alias-'));
+    const linkParent = mkdtempSync(join(tmpdir(), 'cairn-query-link-'));
+    const linkPath = join(linkParent, 'alias');
     const aliasEnv = { ...process.env, HOME: aliasHome, USERPROFILE: aliasHome, APPDATA: join(aliasHome, 'roaming'), LOCALAPPDATA: join(aliasHome, 'local'), XDG_CONFIG_HOME: join(aliasHome, 'config'), XDG_STATE_HOME: join(aliasHome, 'state'), XDG_CACHE_HOME: join(aliasHome, 'cache') };
     try {
       execFileSync('git', ['init', '-q', aliasHome]);
       writeFileSync(join(aliasHome, 'alias.js'), 'export function needleAlias() { return 7; }\n');
       execFileSync(process.execPath, [bin, 'context', 'repos', 'register', aliasHome], { env: aliasEnv, cwd: aliasHome });
       // Register happens with the realpath; a symlink alias of the same directory must query fine.
-      const linkPath = join(tmpdir(), 'cairn-query-link-');
       try { execFileSync('cmd', ['/c', 'mklink', '/J', linkPath, aliasHome]); } catch { /* fallback test below */ }
       if (existsSync(linkPath)) {
         const fetched = JSON.parse(execFileSync(process.execPath, [bin, 'context', 'needleAlias', '--json'], { env: aliasEnv, cwd: linkPath, encoding: 'utf8' }));
@@ -66,7 +67,7 @@ test('a query runs directly after cairn context', () => {
       }
     } finally {
       rmSync(aliasHome, { recursive: true, force: true });
-      rmSync(join(tmpdir(), 'cairn-query-link-'), { recursive: true, force: true });
+      rmSync(linkParent, { recursive: true, force: true });
     }
   } finally {
     rmSync(home, { recursive: true, force: true });

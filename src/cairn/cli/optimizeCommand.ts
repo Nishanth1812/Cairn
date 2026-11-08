@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { runAudit, DataError, type AuditHost } from '../optimize/audit.js';
-import { compareReports, type TaskOutcome } from '../optimize/compare.js';
+import { compareReports, type AuditComparison, type TaskOutcome } from '../optimize/compare.js';
 import { hostCoverage } from '../optimize/hosts.js';
 import { claudeProjectsRoot, listClaudeProjects } from '../optimize/claudeTranscript.js';
 import { codexProjectsRoot, listCodexProjects } from '../optimize/codexTranscript.js';
@@ -112,6 +112,41 @@ function sessionListText(host: AuditHost, sessions: ListedSession[], total: numb
       : '';
     lines.push(`  ${session.project} :: ${session.sessionId}${dates}`);
   }
+  return lines.join('\n');
+}
+
+function compareText(report: AuditComparison): string {
+  const metric = (name: string, label: string): string => {
+    const value = report.metrics[name]!;
+    const count = (n: number | null): string => n === null ? 'unavailable' : n.toLocaleString('en-US');
+    const delta = value.change === null ? 'delta unavailable' : `change ${value.change > 0 ? '+' : ''}${value.change.toLocaleString('en-US')}`;
+    return `  ${label.padEnd(24)} ${count(value.baseline)} → ${count(value.current)} (${delta})`;
+  };
+  const lines = [
+    `Cairn Optimize comparison — ${report.status}`,
+    `Baseline: ${report.reports.baseline.host} — ${report.reports.baseline.project ?? 'all projects'}`,
+    `Current:  ${report.reports.current.host} — ${report.reports.current.project ?? 'all projects'}`,
+    '',
+    'Sessions and provider-reported tokens:',
+    metric('sessionsScanned', 'Sessions scanned'),
+    metric('inputTokens', 'Input tokens'),
+    metric('outputTokens', 'Output tokens'),
+    metric('cacheReadTokens', 'Cache read tokens'),
+    metric('cacheCreationTokens', 'Cache creation tokens'),
+    metric('reasoningTokens', 'Reasoning tokens'),
+    '',
+    'Observed opportunities:',
+    metric('repeatedReads', 'Identical re-reads'),
+    metric('repeatedSearches', 'Repeated searches'),
+    metric('largeToolOutputCount', 'Large outputs (count)'),
+    metric('largeToolOutputChars', 'Large outputs (chars)'),
+    `Task outcome: ${report.taskOutcome.baseline} → ${report.taskOutcome.current} (${report.taskOutcome.change})`,
+  ];
+  if (report.elapsedMs.baseline !== null || report.elapsedMs.current !== null) {
+    const elapsed = (value: number | null): string => value === null ? 'unavailable' : `${value.toLocaleString('en-US')} ms`;
+    lines.push(`Elapsed: ${elapsed(report.elapsedMs.baseline)} → ${elapsed(report.elapsedMs.current)}${report.elapsedMs.change === null ? '' : ` (change ${report.elapsedMs.change > 0 ? '+' : ''}${report.elapsedMs.change.toLocaleString('en-US')} ms)`}`);
+  }
+  if (report.notes.length) lines.push('', 'Notes:', ...report.notes.map((note) => `  ${note}`));
   return lines.join('\n');
 }
 
@@ -271,7 +306,7 @@ export async function runOptimize(argv: string[]): Promise<number> {
         throw new OptimizeError(error instanceof Error ? error.message : String(error), 2, 'invalid_arguments');
       }
       if (json) return { code: 0, data: report };
-      return { code: 0, data: JSON.stringify(report, null, 2) };
+      return { code: 0, data: compareText(report) };
     }
     if (command === 'audit') {
       if (flags[0] === 'help' || flags.includes('--help') || flags.includes('-h')) return { code: 0, data: HELP };
