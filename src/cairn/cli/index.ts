@@ -7,7 +7,6 @@ import { redactDeep, redactSafe } from '../core/security/redactor.js';
 import { getUserPaths } from '../config/paths.js';
 import { isStorageError, storageFailure } from '../storage/storageErrors.js';
 import { performance } from 'node:perf_hooks';
-import packageInfo from '../../../package.json' with { type: 'json' };
 
 export interface CliIo { stdout: (text: string) => void; stderr: (text: string) => void }
 export interface CliResult { code: number; data?: unknown; warnings?: string[]; errors?: string[]; status?: string }
@@ -63,7 +62,7 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = { stdout:
     : parsed.args[0] && !parsed.args[0].startsWith('-') && !COMMANDS.has(parsed.args[0]) ? ['context', ...parsed.args] : parsed.args;
   const command = commandName(args);
   let result: CliResult;
-  if (args.includes('--version') || args[0] === '--version') result = { code: 0, data: { version: packageInfo.version } };
+  if (args.includes('--version') || args[0] === '--version') result = { code: 0, data: { version: '0.2.0' } };
   else if (args.includes('--help') || args.length === 0 || args[0] === 'help') result = { code: 0, data: HELP };
   else if (args[0] === 'hook') result = await (await import('./hookCommand.js')).runHookCommand(args[1]);
   else {

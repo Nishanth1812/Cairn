@@ -88,7 +88,9 @@ function requireCount(value: string | undefined, label: string, fallback: number
 // same way: Windows runners report cwds under 8.3 short names (RUNNER~1\...), which
 // would never string-match the long path stored at register time.
 function canonicalize(path: string): string {
-  try { return realpathSync.native(path); } catch { return path; }
+  try { return realpathSync.native(path); } catch {
+    try { return realpathSync(path); } catch { return path; }
+  }
 }
 // The enclosing git checkout, so a command run from a subfolder finds its repo; falls back to the folder itself.
 function gitRootOf(dir: string): string {
@@ -103,8 +105,7 @@ function repoRow(db: Database.Database, query?: string): { id: string; root_path
   const rows = db.prepare('SELECT id, root_path, display_name FROM repositories ORDER BY display_name').all() as Array<{ id: string; root_path: string; display_name: string }>;
   const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
   const same = (a: string, b: string) => norm(a) === norm(b);
-  const queryPath = query ? canonicalize(resolve(query)) : undefined;
-  const match = query ? rows.find((row) => row.id === query || row.display_name.toLowerCase() === query.toLowerCase() || same(row.root_path, queryPath!))
+  const match = query ? rows.find((row) => row.id === query || row.display_name.toLowerCase() === query.toLowerCase() || same(row.root_path, resolve(query)))
     : rows.find((row) => same(row.root_path, root));
   if (match) return match;
   if (!query && !rows.length) fail('No repositories are registered. Run `cairn context repos register` first.', 3);

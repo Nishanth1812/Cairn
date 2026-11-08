@@ -1,6 +1,6 @@
 {
   "name": "@nishanth1812/cairn",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Cairn Context: a local code index for AI coding agents.",
   "type": "module",
   "repository": {
@@ -20,12 +20,13 @@
   "files": [
     "bin",
     "dist",
+    "docs/optimize.md",
     "LICENSE"
   ],
   "scripts": {
     "prebuild": "node -e \"require('node:fs').rmSync('dist-next',{recursive:true,force:true})\"",
     "build": "tsc --noEmit && rolldown -c",
-    "postbuild": "node -e \"const f=require('node:fs');f.copyFileSync('src/cairn/cli/waymark-compat.mjs','dist-next/waymark.js');try{f.renameSync('dist','dist-old')}catch{}f.renameSync('dist-next','dist');f.rmSync('dist-old',{recursive:true,force:true})\"",
+    "postbuild": "node -e \"const f=require('node:fs');try{f.renameSync('dist','dist-old')}catch{}f.renameSync('dist-next','dist');f.rmSync('dist-old',{recursive:true,force:true})\"",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/cairn",
     "test": "node --test \"tests/cairn/*.test.mjs\"",
@@ -46,9 +47,9 @@
     "better-sqlite3": "^13.0.3"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^9.6.0",
+    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^24.0.0",
-    "eslint": "^10.14.0",
+    "eslint": "^10.13.0",
     "rolldown": "^1.2.16",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.72.1"

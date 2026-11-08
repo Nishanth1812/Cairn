@@ -1,4 +1,5 @@
 import { homedir, platform } from 'node:os';
+import { realpath as realpathPromise } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 export interface UserPaths { config: string; instructions: string; state: string; cache: string }
@@ -28,7 +29,12 @@ export function getUserPaths(os = platform(), env: NodeJS.ProcessEnv = process.e
 
 export async function normalizeCanonicalPath(path: string): Promise<string> {
   const absolute = resolve(path);
-  try { return (await import('node:fs/promises')).realpath(absolute).then((p) => p.replace(/\\/g, '/')); }
-  catch { return absolute.replace(/\\/g, '/'); }
+  // Node exposes the native implementation at runtime; the current Node typings omit it.
+  const nativeRealpath = (realpathPromise as typeof realpathPromise & { native: typeof realpathPromise }).native;
+  try { return (await nativeRealpath(absolute)).replace(/\\/g, '/'); }
+  catch {
+    try { return (await realpathPromise(absolute)).replace(/\\/g, '/'); }
+    catch { return absolute.replace(/\\/g, '/'); }
+  }
 }
 

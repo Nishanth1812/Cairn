@@ -24,7 +24,7 @@ cairn doctor                                      # verify the setup
 
 Release tarballs are attached to each [GitHub release](https://github.com/Nishanth1812/Cairn/releases) (`npm i -g <tarball>`).
 
-After upgrading, run `cairn context setup` to refresh managed instructions. If you previously enabled hooks, pass the same `--hooks` or `--tool-hints` option again to update them. Existing `cairn waymark` commands and installed hooks continue to work.
+After upgrading, run `cairn context setup` to refresh managed instructions. If you previously enabled hooks, pass the same `--hooks` or `--tool-hints` option again to update them.
 
 ## Use
 
@@ -46,6 +46,10 @@ cairn context stats --since 7d                     # is it helping?
 
 Add `--json` for machine output. `cairn context --help` lists every command.
 For a query that is also a command name, use `cairn context -- "doctor"`.
+
+### Audit assistant sessions
+
+`cairn optimize coverage` shows which local session fields Claude Code, Codex, and OpenCode expose. To read a host's session history, choose it explicitly and pass `--consent`, for example `cairn optimize audit --host codex --consent`. The audit is read-only and reports observed local usage; it does not infer subscription quota, cost, or task success. See the [Cairn Optimize privacy and coverage guide](docs/optimize.md) before auditing.
 
 ## How it works
 
